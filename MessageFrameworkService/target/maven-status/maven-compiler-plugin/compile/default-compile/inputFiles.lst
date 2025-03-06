@@ -1,0 +1,10 @@
+E:\work\Intellij\Java\MessageFrameworkService\src\main\java\framework\receiver\MessageReceiverController.java
+E:\work\Intellij\Java\MessageFrameworkService\src\main\java\framework\archiver\MessageArchiver.java
+E:\work\Intellij\Java\MessageFrameworkService\src\main\java\framework\config\ConfigurationManager.java
+E:\work\Intellij\Java\MessageFrameworkService\src\main\java\framework\processor\MessageBatchProcessor.java
+E:\work\Intellij\Java\MessageFrameworkService\src\main\java\framework\retry\RetryProcessor.java
+E:\work\Intellij\Java\MessageFrameworkService\src\main\java\framework\cleanup\CleanupManager.java
+E:\work\Intellij\Java\MessageFrameworkService\src\main\java\framework\MessageFrameworkApplication.java
+E:\work\Intellij\Java\MessageFrameworkService\src\main\java\framework\reporting\MessageReporter.java
+E:\work\Intellij\Java\MessageFrameworkService\src\main\java\framework\throttler\MessageThrottler.java
+E:\work\Intellij\Java\MessageFrameworkService\src\main\java\framework\sender\MessageSender.java

@@ -1,0 +1,10 @@
+framework\processor\MessageBatchProcessor.class
+framework\MessageFrameworkApplication.class
+framework\reporting\MessageReporter.class
+framework\config\ConfigurationManager.class
+framework\retry\RetryProcessor.class
+framework\archiver\MessageArchiver.class
+framework\throttler\MessageThrottler.class
+framework\cleanup\CleanupManager.class
+framework\receiver\MessageReceiverController.class
+framework\sender\MessageSender.class
