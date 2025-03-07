@@ -1,10 +1,16 @@
 framework\processor\MessageBatchProcessor.class
+framework\queue\OutgoingMessage.class
 framework\MessageFrameworkApplication.class
+framework\queue\OutgoingMessageQueue.class
 framework\reporting\MessageReporter.class
+framework\util\EncryptionUtil.class
 framework\config\ConfigurationManager.class
+framework\persistence\MessagePersistenceManager.class
 framework\retry\RetryProcessor.class
+framework\filter\MessageFilter.class
 framework\archiver\MessageArchiver.class
 framework\throttler\MessageThrottler.class
+framework\transformation\MessageTransformer.class
 framework\cleanup\CleanupManager.class
 framework\receiver\MessageReceiverController.class
 framework\sender\MessageSender.class

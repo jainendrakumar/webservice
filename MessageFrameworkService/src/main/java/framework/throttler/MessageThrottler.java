@@ -21,22 +21,18 @@ public class MessageThrottler {
     @Autowired
     private ConfigurationManager configManager;
 
-    // Counters for each message type
     private ConcurrentHashMap<String, AtomicInteger> messageCounters = new ConcurrentHashMap<>();
 
-    /**
-     * Initializes the throttler and schedules periodic counter reset.
-     */
     @PostConstruct
     public void init() {
         Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(this::resetCounters, 1, 1, TimeUnit.SECONDS);
     }
 
     /**
-     * Determines whether a message is allowed based on the rate limit for the given message type.
+     * Checks whether sending a message of the given type is allowed based on the rate limit.
      *
      * @param messageType the message type.
-     * @return true if allowed, false if rate limit exceeded.
+     * @return true if allowed.
      */
     public synchronized boolean allowMessage(String messageType) {
         int limit = Integer.parseInt(configManager.getProperty("throttle." + messageType) != null ?
@@ -51,7 +47,7 @@ public class MessageThrottler {
     }
 
     /**
-     * Resets the message counters.
+     * Resets counters for all message types.
      */
     public void resetCounters() {
         messageCounters.forEach((key, value) -> value.set(0));

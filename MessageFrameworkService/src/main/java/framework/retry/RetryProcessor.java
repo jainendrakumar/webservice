@@ -15,7 +15,8 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Processes messages that failed to send by scanning retry folders and reattempting delivery.
+ * Processes messages that previously failed to send.
+ * Scans the retry folder periodically and reattempts delivery.
  *
  * @author JKR3
  */
@@ -30,31 +31,23 @@ public class RetryProcessor {
 
     private ScheduledExecutorService scheduler;
 
-    /**
-     * Initializes the retry processor to scan for retry files every 30 seconds.
-     */
     @PostConstruct
     public void init() {
         scheduler = Executors.newSingleThreadScheduledExecutor();
-        // Schedule scanning of retry folders every 30 seconds
         scheduler.scheduleAtFixedRate(this::processRetryFolders, 30, 30, TimeUnit.SECONDS);
     }
 
-    /**
-     * Scans the retry base folder, attempts to resend messages, and deletes files on success.
-     */
     private void processRetryFolders() {
-        String retryBase = configManager.getRetryBasePath();
+        String retryBase = configManager.getProperty("retry.base.path", "/data/retry");
         File baseDir = new File(retryBase);
         if (!baseDir.exists()) return;
         Collection<File> files = FileUtils.listFiles(baseDir, new String[]{"json"}, true);
         for (File file : files) {
             try {
                 String message = FileUtils.readFileToString(file, StandardCharsets.UTF_8);
-                // Assuming filename pattern: <messageType>_retry_*.json
                 String fileName = file.getName();
                 String messageType = fileName.split("_")[0];
-                boolean sent = messageSender.sendMessage(messageType, message);
+                boolean sent = messageSender.sendMessageToEndpoint(messageType, message);
                 if (sent) {
                     FileUtils.forceDelete(file);
                 }
