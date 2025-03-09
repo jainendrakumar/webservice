@@ -1,0 +1,4 @@
+2025-03-09 08:01:35 INFO  f.MessageFrameworkApplication - Starting MessageFrameworkApplication using Java 23.0.1 on LP5-JKR3-1CEM with PID 26928 (E:\work\Intellij\Java\MessageFrameworkService\target\classes started by JKR3 in E:\work\Intellij\Java\MessageFrameworkService)
+2025-03-09 08:01:35 INFO  f.MessageFrameworkApplication - No active profile set, falling back to 1 default profile: "default"
+2025-03-09 08:01:36 INFO  o.s.b.w.e.netty.NettyWebServer - Netty started on port 8080
+2025-03-09 08:01:36 INFO  f.MessageFrameworkApplication - Started MessageFrameworkApplication in 1.25 seconds (JVM running for 2.1)
