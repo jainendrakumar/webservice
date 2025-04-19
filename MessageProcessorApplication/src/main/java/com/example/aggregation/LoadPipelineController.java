@@ -5,17 +5,17 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 /**
- * Receives MultiDestinationRake JSON messages at POST /receive-mdr
- * on the port defined by mdr.server.port.
+ * Receives LoadPipeline JSON messages at POST /receive
+ * on the port defined by loadpipeline.server.port.
  */
 @RestController
-@RequestMapping("/receive-mdr")
-public class MultiDestinationRakeController {
+@RequestMapping("/receive")
+public class LoadPipelineController {
 
     private final AggregatorService aggregatorService;
 
     @Autowired
-    public MultiDestinationRakeController(AggregatorService aggregatorService) {
+    public LoadPipelineController(AggregatorService aggregatorService) {
         this.aggregatorService = aggregatorService;
     }
 
@@ -25,7 +25,7 @@ public class MultiDestinationRakeController {
      */
     @PostMapping
     public ResponseEntity<String> receiveMessage(@RequestBody String message) {
-        aggregatorService.processIncomingMdrMessage(message, "port");
-        return ResponseEntity.ok("MultiDestinationRake message received");
+        aggregatorService.processIncomingMessage(message, "port");
+        return ResponseEntity.ok("LoadPipeline message received");
     }
 }
