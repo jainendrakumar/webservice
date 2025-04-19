@@ -1,8 +1,20 @@
 ﻿<?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project
+        xmlns="http://maven.apache.org/POM/4.0.0"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="
+      http://maven.apache.org/POM/4.0.0
+      https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
     <modelVersion>4.0.0</modelVersion>
+
+    <!-- Inherit Spring Boot defaults -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>2.7.5</version>
+        <relativePath/>
+    </parent>
 
     <groupId>com.example.aggregation</groupId>
     <artifactId>message-processor</artifactId>
@@ -10,73 +22,50 @@
     <packaging>jar</packaging>
 
     <name>Message Processor</name>
-    <description>A Spring Boot application to process JSON messages in real-time.</description>
+    <description>
+        Aggregates LoadPipeline &amp; MultiDestinationRake JSON streams in real time.
+    </description>
 
     <properties>
         <java.version>11</java.version>
-        <spring-boot.version>2.7.0</spring-boot.version>
+        <!-- Load external-config.properties -->
+        <spring.config.name>external-config</spring.config.name>
     </properties>
 
     <dependencies>
-        <!-- Spring Boot Starter Web (for REST API) -->
+        <!-- Spring MVC, embedded Tomcat, Jackson, Scheduling -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
-            <version>${spring-boot.version}</version>
         </dependency>
 
-        <!-- Spring Boot Starter (core Spring Boot functionality) -->
+        <!-- Non‑blocking HTTP client (provides WebClient, Reactor) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter</artifactId>
-            <version>${spring-boot.version}</version>
+            <artifactId>spring-boot-starter-webflux</artifactId>
         </dependency>
 
-        <!-- Spring Boot Starter Scheduling (for @Scheduled tasks) -->
-        <!-- https://mvnrepository.com/artifact/org.springframework.boot/spring-boot-starter-parent -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-parent</artifactId>
-            <version>2.7.0</version>
-            <type>pom</type>
-        </dependency>
-
-        <!-- Spring Boot Starter Test (for unit testing) -->
+        <!-- Testing (JUnit, Mockito, etc.) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
-            <version>${spring-boot.version}</version>
             <scope>test</scope>
-        </dependency>
-
-        <!-- Jackson (for JSON processing) -->
-        <dependency>
-            <groupId>com.fasterxml.jackson.core</groupId>
-            <artifactId>jackson-databind</artifactId>
-            <version>2.13.3</version>
         </dependency>
     </dependencies>
 
     <build>
         <plugins>
-            <!-- Spring Boot Maven Plugin (for packaging and running the application) -->
+            <!-- Spring Boot plugin to build an executable JAR -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
-                <version>${spring-boot.version}</version>
                 <configuration>
-                    <mainClass>com.example.aggregation.AggregationServiceApplication</mainClass>
+                    <!-- Use external-config.properties -->
+                    <jvmArguments>-Dspring.config.name=${spring.config.name}</jvmArguments>
                 </configuration>
-                <executions>
-                    <execution>
-                        <goals>
-                            <goal>repackage</goal>
-                        </goals>
-                    </execution>
-                </executions>
             </plugin>
 
-            <!-- Maven Compiler Plugin (for Java 11 compatibility) -->
+            <!-- Java compiler settings -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
@@ -89,24 +78,4 @@
         </plugins>
     </build>
 
-    <repositories>
-        <!-- Maven Central Repository -->
-        <repository>
-            <id>central</id>
-            <url>https://repo.maven.apache.org/maven2</url>
-        </repository>
-    </repositories>
-
-    <pluginRepositories>
-        <!-- Spring Boot Plugin Repository -->
-        <pluginRepository>
-            <id>spring-releases</id>
-            <url>https://repo.spring.io/release</url>
-        </pluginRepository>
-        <!-- Maven Central Plugin Repository -->
-        <pluginRepository>
-            <id>central</id>
-            <url>https://repo.maven.apache.org/maven2</url>
-        </pluginRepository>
-    </pluginRepositories>
 </project>
