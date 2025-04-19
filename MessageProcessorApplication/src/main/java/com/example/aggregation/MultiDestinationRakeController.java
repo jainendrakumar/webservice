@@ -5,27 +5,26 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 /**
- * Receives MultiDestinationRake JSON messages at POST /receive-mdr
- * on the port defined by mdr.server.port.
+ * HTTP ingestion for MultiDestinationRake messages.
+ *  • POST /receive-mdr on mdr.server.port
  */
 @RestController
 @RequestMapping("/receive-mdr")
 public class MultiDestinationRakeController {
 
-    private final AggregatorService aggregatorService;
+    private final AggregatorService svc;
 
     @Autowired
-    public MultiDestinationRakeController(AggregatorService aggregatorService) {
-        this.aggregatorService = aggregatorService;
+    public MultiDestinationRakeController(AggregatorService svc) {
+        this.svc = svc;
     }
 
     /**
-     * Accepts the raw JSON payload, tags it as "port",
-     * and returns immediately.
+     * Receives raw JSON, tags it as "port", and returns 200.
      */
     @PostMapping
-    public ResponseEntity<String> receiveMessage(@RequestBody String message) {
-        aggregatorService.processIncomingMdrMessage(message, "port");
-        return ResponseEntity.ok("MultiDestinationRake message received");
+    public ResponseEntity<String> receive(@RequestBody String json) {
+        svc.processMdr(json, "port");
+        return ResponseEntity.ok("MDR received");
     }
 }

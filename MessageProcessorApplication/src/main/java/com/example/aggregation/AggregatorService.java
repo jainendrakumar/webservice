@@ -5,358 +5,313 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.*;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
+import org.springframework.web.reactive.function.client.WebClient;
 
 import javax.annotation.PreDestroy;
 import java.io.*;
 import java.nio.file.*;
-import java.time.LocalDateTime;
+import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
- * Core service that:
- *  • Parses incoming JSON (LoadPipeline & MDR)
- *  • Buckets by LoadID over time windows
- *  • Aggregates & flushes windows every second
- *  • Archives raw & merged JSON
- *  • Throttles outbound HTTP
- *  • Dispatches to configured REST endpoints
- *  • Reports to daily CSVs
- *  • Dead‑letters failures
+ * Core aggregation service for both LoadPipeline and MultiDestinationRake.
+ * <p>
+ * Features for each stream:
+ *  • JSON parsing & validation
+ *  • LoadID‑keyed bucketing with configurable time window & optional size‑trigger
+ *  • Asynchronous archiving (incoming & merged)
+ *  • Per‑second throttling using LongAdder
+ *  • Non‑blocking HTTP dispatch via WebClient
+ *  • Daily CSV reporting
+ *  • Dead‑letter storage
+ *  • Daily zipping & retention
+ * </p>
  */
 @Service
 public class AggregatorService {
 
-    // JSON parser
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper mapper = new ObjectMapper();
+    private final WebClient http;
 
-    // Buckets keyed by LoadID
-    private final Map<String, MessageBucket> buckets = new ConcurrentHashMap<>();
-    private final Map<String, MessageBucket> mdrBuckets = new ConcurrentHashMap<>();
+    // In-memory buckets
+    private final ConcurrentMap<String, MessageBucket> lpBuckets = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, MessageBucket> mdrBuckets = new ConcurrentHashMap<>();
 
-    // Prevents redundant mkdirs
-    private final Set<String> createdDirs = ConcurrentHashMap.newKeySet();
+    // Thread-pool for I/O tasks
+    private final ExecutorService ioPool = Executors.newFixedThreadPool(4);
 
-    // Thread‑pool for async archiving
-    private final ExecutorService archiveExecutor = Executors.newFixedThreadPool(4);
+    // ─────────── Injected Configuration ────────────────────────────────────────
 
-    // ─── Configuration (injected from external-config.properties) ─────────────
+    // LoadPipeline
+    @Value("${target.loadpipeline.rest.url}")            private String lpUrl;
+    @Value("${target.loadpipeline.rest.enabled}")        private boolean lpEnabled;
+    @Value("${archiving.loadpipeline.enabled}")          private boolean lpArchiveEnabled;
+    @Value("${archive.loadpipeline.incoming.root}")      private String lpIncRoot;
+    @Value("${archive.loadpipeline.merged.root}")        private String lpMergedRoot;
+    @Value("${consolidation.loadpipeline.timeframe}")    private long lpWindow;
+    @Value("${bucket.loadpipeline.flush.size}")          private int lpSizeTrigger;
+    @Value("${throttling.loadpipeline.enabled}")         private boolean lpThrottleEnabled;
+    @Value("${throttling.loadpipeline.limit}")           private int lpThrottleLimit;
+    @Value("${deadletterqueue.loadpipeline}")            private String lpDLQ;
+    @Value("${report.loadpipeline.prefix}")              private String lpReportPrefix;
 
-    // LoadPipeline dispatch settings
-    @Value("${target.loadpipeline.rest.url}")              private String lpRestUrl;
-    @Value("${target.loadpipeline.rest.enabled:true}")     private boolean lpRestEnabled;
+    // MDR
+    @Value("${target.mdr.rest.url}")                     private String mdrUrl;
+    @Value("${target.mdr.rest.enabled}")                 private boolean mdrEnabled;
+    @Value("${archiving.mdr.enabled}")                   private boolean mdrArchiveEnabled;
+    @Value("${archive.mdr.incoming.root}")               private String mdrIncRoot;
+    @Value("${archive.mdr.merged.root}")                 private String mdrMergedRoot;
+    @Value("${consolidation.mdr.timeframe}")             private long mdrWindow;
+    @Value("${bucket.mdr.flush.size}")                   private int mdrSizeTrigger;
+    @Value("${throttling.mdr.enabled}")                  private boolean mdrThrottleEnabled;
+    @Value("${throttling.mdr.limit}")                    private int mdrThrottleLimit;
+    @Value("${deadletterqueue.mdr}")                     private String mdrDLQ;
+    @Value("${report.mdr.prefix}")                       private String mdrReportPrefix;
 
-    // MDR dispatch settings
-    @Value("${target.mdr.rest.url}")                       private String mdrRestUrl;
-    @Value("${target.mdr.rest.enabled:true}")              private boolean mdrRestEnabled;
+    // Shared date formatter
+    private static final DateTimeFormatter DTF_DIR = DateTimeFormatter.ofPattern("yyyyMMdd/HH/mm");
+    private static final DateTimeFormatter DTF_CSV = DateTimeFormatter.ofPattern("mm");
 
-    // Archiving roots
-    @Value("${archive.incoming.root}")                     private String incomingArchiveRoot;
-    @Value("${archive.merged.root}")                       private String mergedArchiveRoot;
+    // Throttling counters
+    private final LongAdder lpCounter = new LongAdder();
+    private volatile long lpWindowStart = System.currentTimeMillis();
 
-    // Dead‑letter directory
-    @Value("${deadletterqueue}")                           private String deadLetterQueue;
+    private final LongAdder mdrCounter = new LongAdder();
+    private volatile long mdrWindowStart = System.currentTimeMillis();
 
-    // CSV report prefixes
-    @Value("${report.file.prefix:report_}")                private String lpReportPrefix;
-    @Value("${report.mdr.file.prefix:report_mdr_}")        private String mdrReportPrefix;
-
-    // Time windows (seconds)
-    @Value("${consolidation.timeframe}")                   private long lpWindowSec;
-    @Value("${mdr.consolidation.timeframe}")               private long mdrWindowSec;
-
-    // Immediate size‑based flush
-    @Value("${bucket.flush.size:0}")                       private int bucketFlushSize;
-
-    // Archiving toggle
-    @Value("${archiving.enabled:true}")                    private boolean archivingEnabled;
-
-    // Throttling settings
-    @Value("${throttling.enabled:true}")                   private boolean throttlingEnabled;
-    @Value("${throttling.limit:5}")                        private int throttlingLimit;
-
-    // (File‑based ingestion props omitted for brevity)
-
-    // For simple per‑second throttling
-    private final Object throttleLock = new Object();
-    private long lastThrottleReset = System.currentTimeMillis();
-    private int throttleCount = 0;
-
-    private final RestTemplate restTemplate;
-
-    public AggregatorService(RestTemplate restTemplate) {
-        this.restTemplate = restTemplate;
+    public AggregatorService(WebClient http) {
+        this.http = http;
     }
 
-    // ─── LoadPipeline Flow ─────────────────────────────────────────────────────
+    // ─────────── Public Ingestion Methods ──────────────────────────────────────
 
     /**
-     * Handle an incoming LoadPipeline JSON message.
-     *
-     * @param message raw JSON
-     * @param source  "port" or "file"
+     * Ingests a LoadPipeline JSON message.
+     * @param json   raw payload
+     * @param source "port" or "file"
      */
-    public void processIncomingMessage(String message, String source) {
-        if ("port".equalsIgnoreCase(source)) {
-            // could track last‑port time if needed
-        }
-        enqueueLoadPipeline(message);
-    }
-
-    /**
-     * Parses and enqueues a LoadPipeline payload into its bucket.
-     */
-    private void enqueueLoadPipeline(String message) {
-        // Archive raw if enabled
-        if (archivingEnabled) {
-            archiveExecutor.submit(() -> archive(message, "incoming"));
-        }
+    public void processLoadPipeline(String json, String source) {
+        // 1) Archive raw if enabled
+        if (lpArchiveEnabled) ioPool.submit(() -> archive(json, lpIncRoot));
+        // 2) Parse & bucket
         try {
-            JsonNode root = objectMapper.readTree(message);
+            JsonNode root = mapper.readTree(json);
             JsonNode arr  = root.get("LoadPipeline");
-            if (arr == null || !arr.isArray() || arr.isEmpty()) {
-                System.err.println("Invalid LoadPipeline payload");
-                return;
+            if (arr == null || !arr.isArray() || arr.size()==0) {
+                throw new IllegalArgumentException("Invalid LoadPipeline payload");
             }
             String loadId = arr.get(0).get("LoadID").asText();
-
-            buckets.compute(loadId, (id, bucket) -> {
-                if (bucket == null) bucket = new MessageBucket();
-                bucket.add(arr);
-                // optional size‑based flush
-                if (bucketFlushSize > 0 && bucket.size() >= bucketFlushSize) {
-                    flushLoadPipeline(id, bucket);
+            lpBuckets.compute(loadId, (id,b) -> {
+                if (b==null) b=new MessageBucket();
+                b.add(arr);
+                if (lpSizeTrigger>0 && b.size()>=lpSizeTrigger) {
+                    flushLoadPipeline(id,b);
                     return null;
                 }
-                return bucket;
+                return b;
             });
-        } catch (IOException e) {
-            e.printStackTrace();
+        } catch (Exception ex) {
+            ex.printStackTrace();
         }
     }
 
     /**
-     * Scheduled every second to flush any LoadPipeline bucket
-     * whose window has expired.
+     * Ingests a MultiDestinationRake JSON message.
+     * @param json   raw payload
+     * @param source "port" or "file"
      */
-    @Scheduled(fixedDelay = 1000)
-    public void flushLpBuckets() {
+    public void processMdr(String json, String source) {
+        if (mdrArchiveEnabled) ioPool.submit(() -> archive(json, mdrIncRoot));
+        try {
+            JsonNode root = mapper.readTree(json);
+            JsonNode arr  = root.get("MultiDestinationRake");
+            if (arr == null || !arr.isArray() || arr.size()==0) {
+                throw new IllegalArgumentException("Invalid MDR payload");
+            }
+            String loadId = arr.get(0).get("LoadID").asText();
+            mdrBuckets.compute(loadId, (id,b) -> {
+                if (b==null) b=new MessageBucket();
+                b.add(arr);
+                return b;
+            });
+        } catch (Exception ex) {
+            ex.printStackTrace();
+        }
+    }
+
+    // ─────────── Scheduled Flush ────────────────────────────────────────────────
+
+    /** Flush LP buckets every second if window expired. */
+    @Scheduled(fixedDelay=1000)
+    public void flushLp() {
         long now = System.currentTimeMillis();
-        buckets.forEach((loadId, bucket) -> {
-            if (now - bucket.getStart() >= lpWindowSec * 1000) {
-                flushLoadPipeline(loadId, bucket);
+        lpBuckets.forEach((id,b)->{
+            if (now - b.getStart() >= lpWindow*1_000) {
+                flushLoadPipeline(id,b);
             }
         });
     }
 
+    /** Flush MDR buckets every second if window expired. */
+    @Scheduled(fixedDelay=1000)
+    public void flushMdr() {
+        long now = System.currentTimeMillis();
+        mdrBuckets.forEach((id,b)->{
+            if (now - b.getStart() >= mdrWindow*1_000) {
+                flushMdrBucket(id,b);
+            }
+        });
+    }
+
+    // ─────────── Flush & Dispatch ─────────────────────────────────────────────
+
     /**
-     * Flushes, aggregates, archives, throttles, dispatches, reports,
-     * and dead‑letters one LoadPipeline bucket.
+     * Merge, archive, throttle, send, report, and remove one LP bucket.
      */
     private void flushLoadPipeline(String loadId, MessageBucket bucket) {
-        // 1) Merge JSON
-        ObjectNode merged = objectMapper.createObjectNode();
-        ArrayNode outArr = merged.putArray("LoadPipeline");
-        bucket.getAll().forEach(node -> node.forEach(outArr::add));
+        // Merge into a single JSON
+        ObjectNode merged = mapper.createObjectNode();
+        ArrayNode out = merged.putArray("LoadPipeline");
+        bucket.getAll().forEach(arr -> arr.forEach(out::add));
         String payload = merged.toString();
 
-        // 2) Archive merged
-        if (archivingEnabled) {
-            archiveExecutor.submit(() -> archive(payload, "merged"));
-        }
+        // Archive merged
+        if (lpArchiveEnabled) ioPool.submit(() -> archive(payload, lpMergedRoot));
 
-        // 3) Throttle & dispatch
-        String minute = LocalDateTime.now().format(DateTimeFormatter.ofPattern("mm"));
-        int count   = bucket.size();
-        if (lpRestEnabled) {
-            if (throttlingEnabled) throttle();
-            doHttpPost(lpRestUrl, payload);
-            writeCsv(lpReportPrefix, loadId, count, minute, "SENT");
+        // CSV minute & count
+        String minute = LocalTime.now().format(DTF_CSV);
+        int count = bucket.size();
+
+        // Throttle
+        if (lpEnabled) {
+            throttle(lpCounter, () -> lpWindowStart = System.currentTimeMillis(), lpThrottleEnabled, lpThrottleLimit);
+            // Non-blocking HTTP
+            http.post()
+                    .uri(lpUrl)
+                    .bodyValue(payload)
+                    .retrieve()
+                    .toBodilessEntity()
+                    .doOnError(e-> {
+                        e.printStackTrace();
+                        ioPool.submit(() -> archive(payload, lpDLQ));
+                        writeCsv(lpReportPrefix, loadId, count, minute, "FAILED");
+                    })
+                    .doOnSuccess(r-> writeCsv(lpReportPrefix, loadId, count, minute, "SENT"))
+                    .subscribe();
         } else {
             writeCsv(lpReportPrefix, loadId, count, minute, "SKIPPED");
         }
-
-        // 4) Remove bucket
-        buckets.remove(loadId);
+        lpBuckets.remove(loadId);
     }
 
-    // ─── MDR Flow ────────────────────────────────────────────────────────────────
-
-    public void processIncomingMdrMessage(String message, String source) {
-        enqueueMdr(message);
-    }
-
-    private void enqueueMdr(String message) {
-        if (archivingEnabled) {
-            archiveExecutor.submit(() -> archive(message, "incoming"));
-        }
-        try {
-            JsonNode root = objectMapper.readTree(message);
-            JsonNode arr  = root.get("MultiDestinationRake");
-            if (arr == null || !arr.isArray() || arr.isEmpty()) {
-                System.err.println("Invalid MDR payload");
-                return;
-            }
-            String loadId = arr.get(0).get("LoadID").asText();
-
-            mdrBuckets.compute(loadId, (id, bucket) -> {
-                if (bucket == null) bucket = new MessageBucket();
-                bucket.add(arr);
-                return bucket;
-            });
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-
-    @Scheduled(fixedDelay = 1000)
-    public void flushMdrBuckets() {
-        long now = System.currentTimeMillis();
-        mdrBuckets.forEach((loadId, bucket) -> {
-            if (now - bucket.getStart() >= mdrWindowSec * 1000) {
-                flushMdr(loadId, bucket);
-            }
-        });
-    }
-
-    private void flushMdr(String loadId, MessageBucket bucket) {
-        ObjectNode merged = objectMapper.createObjectNode();
-        ArrayNode outArr = merged.putArray("MultiDestinationRake");
-        bucket.getAll().forEach(node -> node.forEach(outArr::add));
+    /**
+     * Merge, archive, throttle, send, report, and remove one MDR bucket.
+     */
+    private void flushMdrBucket(String loadId, MessageBucket bucket) {
+        ObjectNode merged = mapper.createObjectNode();
+        ArrayNode out = merged.putArray("MultiDestinationRake");
+        bucket.getAll().forEach(arr -> arr.forEach(out::add));
         String payload = merged.toString();
 
-        if (archivingEnabled) {
-            archiveExecutor.submit(() -> archive(payload, "merged"));
-        }
+        if (mdrArchiveEnabled) ioPool.submit(() -> archive(payload, mdrMergedRoot));
 
-        String minute = LocalDateTime.now().format(DateTimeFormatter.ofPattern("mm"));
-        int count   = bucket.size();
-        if (mdrRestEnabled) {
-            if (throttlingEnabled) throttle();
-            doHttpPost(mdrRestUrl, payload);
-            writeCsv(mdrReportPrefix, loadId, count, minute, "SENT");
+        String minute = LocalTime.now().format(DTF_CSV);
+        int count = bucket.size();
+
+        if (mdrEnabled) {
+            throttle(mdrCounter, () -> mdrWindowStart = System.currentTimeMillis(), mdrThrottleEnabled, mdrThrottleLimit);
+            http.post()
+                    .uri(mdrUrl)
+                    .bodyValue(payload)
+                    .retrieve()
+                    .toBodilessEntity()
+                    .doOnError(e-> {
+                        e.printStackTrace();
+                        ioPool.submit(() -> archive(payload, mdrDLQ));
+                        writeCsv(mdrReportPrefix, loadId, count, minute, "FAILED");
+                    })
+                    .doOnSuccess(r-> writeCsv(mdrReportPrefix, loadId, count, minute, "SENT"))
+                    .subscribe();
         } else {
             writeCsv(mdrReportPrefix, loadId, count, minute, "SKIPPED");
         }
-
         mdrBuckets.remove(loadId);
     }
 
-    // ─── Common Helpers ────────────────────────────────────────────────────────
-
-    /** Simple per‑second throttling. */
-    private void throttle() {
-        synchronized (throttleLock) {
-            long now = System.currentTimeMillis();
-            if (now - lastThrottleReset >= 1000) {
-                lastThrottleReset = now;
-                throttleCount = 0;
-            }
-            if (throttleCount >= throttlingLimit) {
-                try { Thread.sleep(1000 - (now - lastThrottleReset)); }
-                catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
-                lastThrottleReset = System.currentTimeMillis();
-                throttleCount = 0;
-            }
-            throttleCount++;
-        }
-    }
-
-    /** Performs the HTTP POST and dead‑letters on exception. */
-    private void doHttpPost(String url, String json) {
-        HttpHeaders h = new HttpHeaders();
-        h.setContentType(MediaType.APPLICATION_JSON);
-        h.set("Accept-Encoding", "gzip,deflate");
-        HttpEntity<String> req = new HttpEntity<>(json, h);
-        try {
-            restTemplate.exchange(url, HttpMethod.POST, req, String.class);
-        } catch (Exception ex) {
-            ex.printStackTrace();
-            archive(json, deadLetterQueue);
-        }
-    }
+    // ─────────── Helpers ────────────────────────────────────────────────────────
 
     /**
-     * Archives a JSON string under the given type or queue.
-     * type = "incoming", "merged", or deadLetterQueue name.
+     * Throttle at most {@code limit} calls per second using LongAdder.
+     * @param counter      the LongAdder tracking calls
+     * @param resetWindow  callback to reset window timestamp
+     * @param enabled      whether throttling is on
+     * @param limit        max calls/sec
      */
-    private void archive(String message, String type) {
-        try {
-            LocalDateTime now = LocalDateTime.now();
-            String sub  = now.format(DateTimeFormatter.ofPattern("yyyyMMdd"))
-                    + File.separator + now.format(DateTimeFormatter.ofPattern("HH"))
-                    + File.separator + now.format(DateTimeFormatter.ofPattern("mm"));
-            String root = "incoming".equals(type) || "merged".equals(type)
-                    ? ("incoming".equals(type) ? incomingArchiveRoot : mergedArchiveRoot)
-                    : type;
-            String base = root + File.separator + sub;
-            if (createdDirs.add(base)) {
-                Files.createDirectories(Paths.get(base));
-            }
-            String fn = base + File.separator
-                    + System.currentTimeMillis() + "_" + UUID.randomUUID() + ".json";
-            try (FileWriter fw = new FileWriter(fn)) {
-                fw.write(message);
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
+    private void throttle(LongAdder counter, Runnable resetWindow, boolean enabled, int limit) {
+        if (!enabled) return;
+        long now = System.currentTimeMillis();
+        if (now - (enabled ? lpWindowStart : mdrWindowStart) >= 1000) {
+            counter.reset();
+            resetWindow.run();
         }
+        if (counter.sum() >= limit) {
+            try { Thread.sleep(1); } catch (InterruptedException ignored) {}
+        }
+        counter.increment();
     }
 
     /**
-     * Appends a line to the daily CSV (prefix + yyyyMMdd + .csv).
+     * Write a daily CSV line under prefix+yyyyMMdd.csv.
      */
     private void writeCsv(String prefix, String loadId, int count, String minute, String status) {
-        String date = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
+        String date = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
         String file = prefix + date + ".csv";
-        boolean needHeader = !new File(file).exists();
-        try (BufferedWriter bw = new BufferedWriter(new FileWriter(file, true))) {
-            if (needHeader) {
-                bw.write("Minute,LoadID,EntryCount,Status");
-                bw.newLine();
-            }
-            bw.write(String.join(",", minute, loadId, String.valueOf(count), status));
-            bw.newLine();
+        boolean header = !Files.exists(Path.of(file));
+        try (BufferedWriter bw = Files.newBufferedWriter(Path.of(file), StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
+            if (header) bw.write("Minute,LoadID,EntryCount,Status\n");
+            bw.write(String.join(",", minute, loadId, String.valueOf(count), status) + "\n");
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
 
-    /** Gracefully shuts down the archive executor. */
-    @PreDestroy
-    public void shutdown() {
-        archiveExecutor.shutdown();
+    /**
+     * Archive JSON to disk under root/YYYYMMdd/HH/mm/*.json.
+     */
+    private void archive(String json, String root) {
+        try {
+            String sub = LocalDateTime.now().format(DTF_DIR);
+            Path dir = Path.of(root, sub);
+            Files.createDirectories(dir);
+            Path file = dir.resolve(System.currentTimeMillis()+"_"+UUID.randomUUID()+".json");
+            Files.writeString(file, json, StandardOpenOption.CREATE_NEW);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 
-    // ─── Bucket Data Class ─────────────────────────────────────────────────────
+    @PreDestroy
+    public void shutdown() {
+        ioPool.shutdown();
+    }
+
+    // ─────────── Internal Bucket Class ─────────────────────────────────────────
 
     /**
-     * Holds messages for one LoadID along with first‑arrival timestamp.
+     * Holds an arrival timestamp and a list of JSON array nodes.
      */
     private static class MessageBucket {
-        private final long startTime = System.currentTimeMillis();
-        private final Queue<JsonNode> queue = new ConcurrentLinkedQueue<>();
+        private final long start = System.currentTimeMillis();
+        private final List<JsonNode> list = new CopyOnWriteArrayList<>();
 
-        /** Adds one JSON array node to this bucket. */
-        void add(JsonNode arr) {
-            queue.add(arr);
-        }
-        /** @return timestamp when first message arrived */
-        long getStart() {
-            return startTime;
-        }
-        /** @return all queued JSON array nodes */
-        List<JsonNode> getAll() {
-            return new ArrayList<>(queue);
-        }
-        /** @return number of messages in this bucket */
-        int size() {
-            return queue.size();
-        }
+        void add(JsonNode arr) { list.add(arr); }
+        long getStart()      { return start; }
+        List<JsonNode> getAll() { return list; }
+        int size()           { return list.size(); }
     }
 }

@@ -5,27 +5,26 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 /**
- * Receives LoadPipeline JSON messages at POST /receive
- * on the port defined by loadpipeline.server.port.
+ * HTTP ingestion for LoadPipeline messages.
+ *  • POST /receive on loadpipeline.server.port
  */
 @RestController
 @RequestMapping("/receive")
 public class LoadPipelineController {
 
-    private final AggregatorService aggregatorService;
+    private final AggregatorService svc;
 
     @Autowired
-    public LoadPipelineController(AggregatorService aggregatorService) {
-        this.aggregatorService = aggregatorService;
+    public LoadPipelineController(AggregatorService svc) {
+        this.svc = svc;
     }
 
     /**
-     * Accepts the raw JSON payload, tags it as "port",
-     * and returns immediately.
+     * Receives raw JSON, tags it as "port", and returns 200.
      */
     @PostMapping
-    public ResponseEntity<String> receiveMessage(@RequestBody String message) {
-        aggregatorService.processIncomingMessage(message, "port");
-        return ResponseEntity.ok("LoadPipeline message received");
+    public ResponseEntity<String> receive(@RequestBody String json) {
+        svc.processLoadPipeline(json, "port");
+        return ResponseEntity.ok("LoadPipeline received");
     }
 }

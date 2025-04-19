@@ -15,101 +15,91 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * Zips previous day's incoming & merged archives, then enforces
- * retention of at most {@code archive.zip.maxFiles} zip files.
+ * Zips & cleans up archives per‑feature:
+ *  • LoadPipeline: cron=archive.zipper.loadpipeline.cron, root=archive.loadpipeline.*
+ *  • MDR         : cron=archive.zipper.mdr.cron,         root=archive.mdr.*
  */
 @Service
 public class ArchiveZipper {
 
-    @Value("${archive.incoming.root}")
-    private String incomingRoot;
+    // LoadPipeline zipping
+    @Value("${archive.zipper.loadpipeline.enabled}")    private boolean lpZipEnabled;
+    @Value("${archive.zipper.loadpipeline.cron}")       private String lpZipCron;
+    @Value("${archive.zip.loadpipeline.output}")        private String lpZipOutput;
+    @Value("${archive.zipper.loadpipeline.maxFiles}")   private int lpZipMax;
 
-    @Value("${archive.merged.root}")
-    private String mergedRoot;
+    // MDR zipping
+    @Value("${archive.zipper.mdr.enabled}")             private boolean mdrZipEnabled;
+    @Value("${archive.zipper.mdr.cron}")                private String mdrZipCron;
+    @Value("${archive.zip.mdr.output}")                 private String mdrZipOutput;
+    @Value("${archive.zipper.mdr.maxFiles}")            private int mdrZipMax;
 
-    @Value("${archive.zip.output.root}")
-    private String zipOutputRoot;
+    // Format for yesterday
+    private static final DateTimeFormatter DATEFMT = DateTimeFormatter.ofPattern("yyyyMMdd");
 
-    @Value("${archive.zipper.enabled}")
-    private boolean enabled;
+    @Scheduled(cron = "${archive.zipper.loadpipeline.cron}")
+    public void zipLpDay() {
+        if (!lpZipEnabled) return;
+        zipAndClean("archive/loadpipeline", DATEFMT.format(LocalDate.now().minusDays(1)),
+                lpZipOutput, "incoming", lpZipMax);
+        zipAndClean("archive/loadpipeline", DATEFMT.format(LocalDate.now().minusDays(1)),
+                lpZipOutput, "merged", lpZipMax);
+    }
 
-    @Value("${archive.zip.maxFiles}")
-    private int maxFiles;
+    @Scheduled(cron = "${archive.zipper.mdr.cron}")
+    public void zipMdrDay() {
+        if (!mdrZipEnabled) return;
+        zipAndClean("archive/mdr", DATEFMT.format(LocalDate.now().minusDays(1)),
+                mdrZipOutput, "incoming", mdrZipMax);
+        zipAndClean("archive/mdr", DATEFMT.format(LocalDate.now().minusDays(1)),
+                mdrZipOutput, "merged", mdrZipMax);
+    }
 
     /**
-     * Runs daily at the cron defined in external-config.properties.
+     * Zips all subdirs under rootDir/datePrefix/type_/ into one zip, then deletes them.
      */
-    @Scheduled(cron = "${archive.zip.cron}")
-    public void zipAndCleanup() {
-        if (!enabled) return;
-        String date = LocalDate.now().minusDays(1)
-                .format(DateTimeFormatter.ofPattern("yyyyMMdd"));
-        zipDir(incomingRoot, date, "incoming_" + date + ".zip");
-        zipDir(mergedRoot,   date, "merged_"   + date + ".zip");
-        cleanupOldZips();
-    }
-
-    private void zipDir(String root, String datePref, String zipName) {
+    private void zipAndClean(String rootDir, String datePref, String zipOut, String type, int max) {
         try {
-            File[] dirs = new File(root).listFiles(f ->
-                    f.isDirectory() && f.getName().startsWith(datePref)
-            );
-            if (dirs == null || dirs.length == 0) return;
+            Path outDir = Paths.get(zipOut);
+            Files.createDirectories(outDir);
 
-            Files.createDirectories(Paths.get(zipOutputRoot));
-            try (ZipOutputStream zos = new ZipOutputStream(
-                    new FileOutputStream(zipOutputRoot + File.separator + zipName))) {
-                for (File d : dirs) {
-                    addFolderToZip(d, d.getName(), zos);
-                }
+            String prefix = datePref + type;
+            File[] toZip = new File(rootDir).listFiles(f->f.isDirectory() && f.getName().startsWith(prefix));
+            if (toZip==null || toZip.length==0) return;
+
+            Path zipFile = outDir.resolve(type + "_" + datePref + ".zip");
+            try (ZipOutputStream zos = new ZipOutputStream(Files.newOutputStream(zipFile))) {
+                for (File d:toZip) zipDir(d, d.getName(), zos);
             }
-            for (File d : dirs) { deleteRecursively(d.toPath()); }
-        } catch (IOException e) {
-            e.printStackTrace();
+            for (File d:toZip) deleteRec(d.toPath());
+
+            // Retention
+            File[] zips = outDir.toFile().listFiles((d,n)->n.endsWith(".zip"));
+            if (zips!=null && zips.length>max) {
+                Arrays.sort(zips, Comparator.comparingLong(File::lastModified));
+                for (int i=0;i<zips.length-max;i++) zips[i].delete();
+            }
+        } catch(Exception e) { e.printStackTrace(); }
+    }
+
+    private void zipDir(File folder,String parent,ZipOutputStream zos) throws IOException {
+        for(File f:folder.listFiles()){
+            if(f.isDirectory()) zipDir(f,parent+"/"+f.getName(),zos);
+            else try(FileInputStream fis=new FileInputStream(f)) {
+                zos.putNextEntry(new ZipEntry(parent+"/"+f.getName()));
+                byte[] buf=new byte[1024];int len;
+                while((len=fis.read(buf))>0) zos.write(buf,0,len);
+                zos.closeEntry();
+            }
         }
     }
 
-    private void addFolderToZip(File folder, String parent, ZipOutputStream zos)
-            throws IOException {
-        for (File f : folder.listFiles()) {
-            if (f.isDirectory()) {
-                addFolderToZip(f, parent + "/" + f.getName(), zos);
-            } else {
-                try (FileInputStream fis = new FileInputStream(f)) {
-                    zos.putNextEntry(new ZipEntry(parent + "/" + f.getName()));
-                    byte[] buf = new byte[1024];
-                    int len;
-                    while ((len = fis.read(buf)) > 0) {
-                        zos.write(buf, 0, len);
-                    }
-                    zos.closeEntry();
-                }
-            }
-        }
-    }
-
-    private void deleteRecursively(Path path) throws IOException {
-        Files.walkFileTree(path, new SimpleFileVisitor<>() {
-            @Override public FileVisitResult visitFile(Path file, BasicFileAttributes attrs)
-                    throws IOException {
-                Files.delete(file); return FileVisitResult.CONTINUE;
-            }
-            @Override public FileVisitResult postVisitDirectory(Path dir, IOException exc)
-                    throws IOException {
-                Files.delete(dir); return FileVisitResult.CONTINUE;
-            }
+    private void deleteRec(Path path)throws IOException{
+        Files.walkFileTree(path,new SimpleFileVisitor<>() {
+            public FileVisitResult visitFile(Path file,BasicFileAttributes attrs)throws IOException {
+                Files.delete(file);return FileVisitResult.CONTINUE;}
+            public FileVisitResult postVisitDirectory(Path dir,IOException exc)throws IOException {
+                Files.delete(dir);return FileVisitResult.CONTINUE;}
         });
-    }
-
-    private void cleanupOldZips() {
-        File dir = new File(zipOutputRoot);
-        File[] zips = dir.listFiles((d,n)->n.endsWith(".zip"));
-        if (zips == null || zips.length <= maxFiles) return;
-        Arrays.sort(zips, Comparator.comparingLong(File::lastModified));
-        for (int i = 0; i < zips.length - maxFiles; i++) {
-            if (!zips[i].delete()) {
-                System.err.println("Could not delete old zip: " + zips[i]);
-            }
-        }
     }
 }

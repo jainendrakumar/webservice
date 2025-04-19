@@ -7,14 +7,15 @@ import org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactor
 import org.springframework.boot.web.servlet.server.ServletWebServerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.scheduling.annotation.EnableScheduling;
-import org.springframework.web.client.RestTemplate;
+import org.springframework.web.reactive.function.client.WebClient;
 import org.apache.catalina.connector.Connector;
 
 /**
  * Bootstraps the Spring Boot application, enables scheduling,
  * and configures two HTTP ports:
- *  • LoadPipeline on loadpipeline.server.port
- *  • MDR on mdr.server.port
+ *  - LoadPipeline on loadpipeline.server.port
+ *  - MDR         on mdr.server.port
+ * Also provides a non-blocking WebClient.
  */
 @SpringBootApplication
 @EnableScheduling
@@ -24,33 +25,38 @@ public class AggregationServiceApplication {
         SpringApplication.run(AggregationServiceApplication.class, args);
     }
 
-    /**
-     * Shared RestTemplate for HTTP dispatch.
-     */
-    @Bean
-    public RestTemplate restTemplate() {
-        return new RestTemplate();
-    }
-
+    /** Primary port for LoadPipeline ingestion. */
     @Value("${loadpipeline.server.port}")
-    private int loadPipelinePort;
+    private int lpPort;
 
+    /** Secondary port for MDR ingestion. */
     @Value("${mdr.server.port}")
     private int mdrPort;
 
     /**
-     * Configures the embedded Tomcat to listen on two ports:
-     * primary = loadPipelinePort, additional = mdrPort.
+     * Configures embedded Tomcat with two connectors:
+     * primary = lpPort, additional = mdrPort.
      */
     @Bean
     public ServletWebServerFactory servletContainer() {
         TomcatServletWebServerFactory tomcat = new TomcatServletWebServerFactory();
-        // Set the main port:
-        tomcat.setPort(loadPipelinePort);
-        // Add the MDR port:
+        // Primary connector uses server.port (lpPort)
+        tomcat.setPort(lpPort);
+
+        // Additional connector for MDR
         Connector mdrConnector = new Connector(TomcatServletWebServerFactory.DEFAULT_PROTOCOL);
         mdrConnector.setPort(mdrPort);
         tomcat.addAdditionalTomcatConnectors(mdrConnector);
+
         return tomcat;
+    }
+
+    /**
+     * Shared non-blocking HTTP client (WebClient).
+     * Used by AggregatorService for dispatch.
+     */
+    @Bean
+    public WebClient webClient() {
+        return WebClient.builder().build();
     }
 }
