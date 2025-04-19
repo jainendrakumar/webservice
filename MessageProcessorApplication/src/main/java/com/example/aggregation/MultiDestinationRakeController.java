@@ -1,4 +1,4 @@
-// src/main/java/com/example/aggregation/MessageController.java
+// src/main/java/com/example/aggregation/MultiDestinationRakeController.java
 package com.example.aggregation;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -6,22 +6,22 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 /**
- * Receives LoadPipeline messages on port 9021 → /receive
+ * Receives MultiDestinationRake messages on port 9022 → /receive-mdr
  */
 @RestController
-@RequestMapping("/receive")
-public class MessageController {
+@RequestMapping("/receive-mdr")
+public class MultiDestinationRakeController {
 
     private final AggregatorService aggregatorService;
 
     @Autowired
-    public MessageController(AggregatorService aggregatorService) {
+    public MultiDestinationRakeController(AggregatorService aggregatorService) {
         this.aggregatorService = aggregatorService;
     }
 
     @PostMapping
     public ResponseEntity<String> receiveMessage(@RequestBody String message) {
-        aggregatorService.processIncomingMessage(message, "port");
-        return ResponseEntity.ok("Message received successfully");
+        aggregatorService.processIncomingMdrMessage(message, "port");
+        return ResponseEntity.ok("MultiDestinationRake message received successfully");
     }
 }

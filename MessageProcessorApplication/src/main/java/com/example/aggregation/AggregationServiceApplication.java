@@ -1,3 +1,4 @@
+// src/main/java/com/example/aggregation/AggregationServiceApplication.java
 package com.example.aggregation;
 
 import org.springframework.boot.SpringApplication;
@@ -5,41 +6,32 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactory;
+import org.apache.catalina.connector.Connector;
+import org.springframework.boot.web.servlet.server.ServletWebServerFactory;
 
-/**
- * Main application class for the Aggregation Service.
- *
- * <p>This class bootstraps the Spring Boot application, enables scheduling for
- * periodic tasks (such as bucket flushing and input processing), and provides
- * shared beans like {@link RestTemplate} for HTTP communication with the target
- * REST endpoint.</p>
- *
- * @author jkr3
- */
 @SpringBootApplication
 @EnableScheduling
 public class AggregationServiceApplication {
 
-    /**
-     * Entry point for the Aggregation Service Spring Boot application.
-     *
-     * @param args runtime arguments (not used)
-     */
     public static void main(String[] args) {
         SpringApplication.run(AggregationServiceApplication.class, args);
     }
 
-    /**
-     * Defines a {@link RestTemplate} bean for performing synchronous HTTP requests.
-     * <p>
-     * This bean is used by {@code AggregatorService} to send merged JSON payloads
-     * to the configured target REST URL.
-     * </p>
-     *
-     * @return a new {@link RestTemplate} instance
-     */
     @Bean
     public RestTemplate restTemplate() {
         return new RestTemplate();
+    }
+
+    /**
+     * Also bind port 9022 so we can expose a separate endpoint for MDR.
+     */
+    @Bean
+    public ServletWebServerFactory servletContainer() {
+        TomcatServletWebServerFactory tomcat = new TomcatServletWebServerFactory();
+        Connector connector = new Connector(TomcatServletWebServerFactory.DEFAULT_PROTOCOL);
+        connector.setPort(9022);
+        tomcat.addAdditionalTomcatConnectors(connector);
+        return tomcat;
     }
 }
