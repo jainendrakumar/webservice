@@ -8,12 +8,12 @@
 
     <modelVersion>4.0.0</modelVersion>
 
-    <!-- Inherit Spring Boot defaults -->
+    <!-- Inherit Spring Boot defaults for dependency & plugin management -->
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
         <version>2.7.5</version>
-        <relativePath/>
+        <relativePath/> <!-- look up parent from repository -->
     </parent>
 
     <groupId>com.example.aggregation</groupId>
@@ -23,29 +23,32 @@
 
     <name>Message Processor</name>
     <description>
-        Aggregates LoadPipeline &amp; MultiDestinationRake JSON streams in real time.
+        High-throughput JSON aggregator for six message types, with:
+        per-ID bucketing, global batching, archiving, throttling,
+        non-blocking dispatch, CSV reporting, dead-letter, daily zipping.
     </description>
 
     <properties>
+        <!-- Java version -->
         <java.version>11</java.version>
-        <!-- Load external-config.properties -->
+        <!-- Load external-config.properties instead of application.properties -->
         <spring.config.name>external-config</spring.config.name>
     </properties>
 
     <dependencies>
-        <!-- Spring MVC, embedded Tomcat, Jackson, Scheduling -->
+        <!-- Spring Web (MVC + Tomcat + Jackson + Scheduling) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
-        <!-- Non‑blocking HTTP client (provides WebClient, Reactor) -->
+        <!-- WebFlux for non-blocking WebClient -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webflux</artifactId>
         </dependency>
 
-        <!-- Testing (JUnit, Mockito, etc.) -->
+        <!-- Testing: JUnit, Mockito, Spring Test -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
@@ -55,17 +58,16 @@
 
     <build>
         <plugins>
-            <!-- Spring Boot plugin to build an executable JAR -->
+            <!-- Spring Boot Maven Plugin: packages executable jar & uses our config name -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>
-                    <!-- Use external-config.properties -->
                     <jvmArguments>-Dspring.config.name=${spring.config.name}</jvmArguments>
                 </configuration>
             </plugin>
 
-            <!-- Java compiler settings -->
+            <!-- Compiler: set Java source/target levels -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
