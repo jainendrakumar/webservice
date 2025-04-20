@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Aggregation Service - Controller Overview</title>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; margin: 20px; }
+        table { border-collapse: collapse; width: 100%; margin-bottom: 30px; }
+        th, td { border: 1px solid #ccc; padding: 8px 12px; text-align: center; }
+        th { background-color: #f4f4f4; }
+        caption { font-size: 1.2em; font-weight: bold; margin-bottom: 10px; }
+        h2 { margin-top: 40px; }
+    </style>
+</head>
+<body>
+
+<h1>Aggregation Service - Ingestion Controller Summary</h1>
+
+<h2>Controller Details</h2>
+<table>
+    <caption>Ingestion Controller Mapping</caption>
+    <thead>
+    <tr>
+        <th>Controller Class</th>
+        <th>URL Path</th>
+        <th>Port Config Key</th>
+        <th>JSON Key</th>
+        <th>AggregatorService Method</th>
+    </tr>
+    </thead>
+    <tbody>
+    <tr><td>LoadPipelineController</td><td>/receive</td><td>loadpipeline.server.port</td><td>LoadPipeline</td><td>processLoadPipeline</td></tr>
+    <tr><td>MultiDestinationRakeController</td><td>/receive-mdr</td><td>mdr.server.port</td><td>MultiDestinationRake</td><td>processMdr</td></tr>
+    <tr><td>LoadAttributeController</td><td>/receive-loadattribute</td><td>loadattribute.server.port</td><td>LoadAttribute</td><td>processLoadAttribute</td></tr>
+    <tr><td>MaintenanceBlockController</td><td>/receive-maintenanceblock</td><td>maintenanceblock.server.port</td><td>MaintenanceBlock</td><td>processMaintenanceBlock</td></tr>
+    <tr><td>MaintenanceBlockResourceController</td><td>/receive-maintenanceblockresource</td><td>maintenanceblockresource.server.port</td><td>MaintenanceBlockResource</td><td>processMaintenanceBlockResource</td></tr>
+    <tr><td>TrainServiceUpdateActualController</td><td>/receive-trainserviceupdate</td><td>trainserviceupdate.server.port</td><td>TrainActual</td><td>processTrainServiceUpdate</td></tr>
+    </tbody>
+</table>
+
+<h2>Feature Support Matrix</h2>
+<table>
+    <thead>
+    <tr>
+        <th>Feature</th>
+        <th>LoadPipeline</th>
+        <th>MDR</th>
+        <th>LoadAttribute</th>
+        <th>MaintBlock</th>
+        <th>MaintBlockRes</th>
+        <th>TrainActual</th>
+    </tr>
+    </thead>
+    <tbody>
+    <tr><td>Per-ID Batching</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
+    <tr><td>Global Batching</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+    <tr><td>Time-Based Flushing</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+    <tr><td>Size-Based Flushing</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+    <tr><td>Incoming Archiving</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+    <tr><td>Merged Archiving</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+    <tr><td>Throttling</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+    <tr><td>Async REST Dispatch</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+    <tr><td>CSV Logging</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+    <tr><td>Dead Letter Queue</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+    </tbody>
+</table>
+
+<h2>Pipeline Type Reference</h2>
+<table>
+    <thead>
+    <tr>
+        <th>Pipeline</th>
+        <th>Batching Type</th>
+        <th>Grouping Key</th>
+        <th>Expected JSON Root Key</th>
+    </tr>
+    </thead>
+    <tbody>
+    <tr><td>LoadPipeline</td><td>Per-ID</td><td>LoadID</td><td>LoadPipeline</td></tr>
+    <tr><td>MultiDestinationRake</td><td>Per-ID</td><td>LoadID</td><td>MultiDestinationRake</td></tr>
+    <tr><td>LoadAttribute</td><td>Global</td><td>N/A</td><td>LoadAttribute</td></tr>
+    <tr><td>MaintenanceBlock</td><td>Global</td><td>N/A</td><td>MaintenanceBlock</td></tr>
+    <tr><td>MaintenanceBlockResource</td><td>Global</td><td>N/A</td><td>MaintenanceBlockResource</td></tr>
+    <tr><td>TrainServiceUpdateActual</td><td>Global</td><td>N/A</td><td>TrainActual</td></tr>
+    </tbody>
+</table>
+
+</body>
+<head>
+    <meta charset="UTF-8">
+    <title>Aggregation Service - Detailed Design</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.7; }
+        h1, h2, h3 { color: #2d5b8c; }
+        code { background-color: #f4f4f4; padding: 2px 5px; border-radius: 3px; }
+        ul, ol { margin-left: 25px; }
+        table { border-collapse: collapse; width: 100%; margin: 20px 0; }
+        th, td { border: 1px solid #ccc; padding: 10px; text-align: left; }
+        th { background-color: #eee; }
+    </style>
+</head>
+<body>
+
+<h1>Aggregation Service - Detailed Design & Implementation</h1>
+
+<h2>1. Overview</h2>
+<p>
+    The Aggregation Service is a Java-based microservice designed to process and dispatch large-scale JSON messages
+    across six ingestion pipelines. It handles batching, archiving, throttling, and reporting using Spring Boot and
+    scheduled tasks.
+</p>
+
+<h2>2. Architecture Components</h2>
+<ul>
+    <li><strong>Controllers:</strong> Each ingestion type has its own REST controller, running on a dedicated port.</li>
+    <li><strong>AggregatorService:</strong> Central processing class handling batching, archiving, dispatching, and reporting.</li>
+    <li><strong>ArchiveZipper:</strong> Scheduled service for daily ZIP compression and retention of archived data.</li>
+    <li><strong>external-config.properties:</strong> Configures all ports, limits, file paths, cron jobs, and feature toggles.</li>
+</ul>
+
+<h2>3. Data Flow</h2>
+<ol>
+    <li>Client sends JSON payload (POST request) to a controller endpoint.</li>
+    <li>The controller forwards the raw JSON to the <code>AggregatorService</code>.</li>
+    <li><code>AggregatorService</code> archives the raw JSON and places it in a per-ID or global batch queue.</li>
+    <li>Batches are flushed based on size or time triggers.</li>
+    <li>Merged payloads are archived and dispatched via non-blocking <code>WebClient</code>.</li>
+    <li>Each result is logged to a CSV file; failures go to a Dead Letter Queue (DLQ).</li>
+    <li><code>ArchiveZipper</code> runs nightly to ZIP daily folders and maintain retention.</li>
+</ol>
+
+<h2>4. Controller Responsibilities</h2>
+<p>Each controller listens on a unique port and endpoint, defined in <code>external-config.properties</code>.</p>
+<ul>
+    <li><code>LoadPipelineController</code> - Handles per-ID batching using <code>LoadID</code>.</li>
+    <li><code>MultiDestinationRakeController</code> - Per-ID batching via <code>LoadID</code>.</li>
+    <li><code>LoadAttributeController</code> - Global batching.</li>
+    <li><code>MaintenanceBlockController</code> - Global batching.</li>
+    <li><code>MaintenanceBlockResourceController</code> - Global batching.</li>
+    <li><code>TrainServiceUpdateActualController</code> - Global batching of <code>TrainActual</code> array.</li>
+</ul>
+
+<h2>5. AggregatorService Features</h2>
+<ul>
+    <li><strong>Per-ID vs Global batching</strong>: Messages are grouped either by <code>LoadID</code> or into a shared queue.</li>
+    <li><strong>Size triggers</strong>: Flush occurs when message count exceeds threshold.</li>
+    <li><strong>Time triggers</strong>: Flush occurs if messages remain unflushed beyond configured seconds.</li>
+    <li><strong>Archiving</strong>: Both incoming and merged JSON are saved using timestamped directories.</li>
+    <li><strong>Dispatch</strong>: Sent via <code>WebClient</code> to external REST URLs; throttling optional.</li>
+    <li><strong>DLQ & CSV logs</strong>: Failed messages are stored in DLQ, and all results are recorded in CSV.</li>
+</ul>
+
+<h2>6. Archiving & Scheduling</h2>
+<ul>
+    <li><strong>Incoming Archive:</strong> Stores raw messages for traceability.</li>
+    <li><strong>Merged Archive:</strong> Stores flushed JSON batches.</li>
+    <li><strong>DLQ Archive:</strong> Stores failed messages for investigation.</li>
+    <li><strong>ArchiveZipper:</strong> Zips daily folders and maintains retention (max N ZIPs).</li>
+</ul>
+
+<h2>7. Configuration Properties</h2>
+<p><code>external-config.properties</code> defines all system behavior:</p>
+<ul>
+    <li><strong>Ports:</strong> Each controller runs on its own configurable port.</li>
+    <li><strong>Batching:</strong> Time window and size threshold per pipeline.</li>
+    <li><strong>Throttling:</strong> Per-second limits using LongAdder counters.</li>
+    <li><strong>Archive paths:</strong> Separated for incoming and merged.</li>
+    <li><strong>REST URLs:</strong> Dispatch URLs for processed payloads.</li>
+    <li><strong>DLQ paths:</strong> Where to store failed payloads.</li>
+    <li><strong>ZIP cron + retention:</strong> Controls when and how archives are zipped.</li>
+</ul>
+
+<h2>8. Technologies Used</h2>
+<ul>
+    <li>Java 17+</li>
+    <li>Spring Boot (Web, Scheduling)</li>
+    <li>Jackson (JSON parsing)</li>
+    <li>WebClient (non-blocking HTTP)</li>
+    <li>Tomcat multi-port connectors</li>
+    <li>ExecutorService for async I/O</li>
+</ul>
+
+<h2>9. Extensibility</h2>
+<p>
+    To add a new pipeline:
+</p>
+<ol>
+    <li>Create a new controller class similar to existing ones.</li>
+    <li>Add a handler method in <code>AggregatorService</code>.</li>
+    <li>Add configuration entries for batching, archiving, throttling, etc.</li>
+    <li>Add routes, folder paths, DLQ locations, and ZIP schedules as needed.</li>
+</ol>
+
+<h2>10. Summary</h2>
+<p>
+    The Aggregation Service is designed to handle scalable, fault-tolerant, high-volume JSON ingestion pipelines.
+    It uses well-isolated components, configurable behavior, and consistent batching + dispatch strategies,
+    making it easy to monitor, troubleshoot, and extend.
+</p>
+
+</body>
+<head>
+    <meta charset="UTF-8">
+    <title>Aggregation Service – Feature Documentation</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.8; color: #333; }
+        h1, h2, h3 { color: #2c3e50; }
+        table { border-collapse: collapse; width: 100%; margin: 20px 0; }
+        th, td { border: 1px solid #ccc; padding: 12px; text-align: left; }
+        th { background-color: #f8f8f8; }
+        ul, ol { margin-left: 25px; }
+        code { background-color: #f4f4f4; padding: 3px 5px; border-radius: 3px; }
+    </style>
+</head>
+<body>
+
+<h1>Aggregation Service – Feature Guide</h1>
+<p>
+    This document provides an overview of all the features offered by the Aggregation Service and guidance on how they work.
+    This system is designed to handle high-volume JSON data ingestion, processing, batching, archiving, dispatching, and reporting.
+</p>
+
+<h2>1. Multi-Pipeline Support</h2>
+<p>
+    The service supports six distinct ingestion pipelines, each with its own configuration, REST endpoint, and processing logic:
+</p>
+<ul>
+    <li><strong>LoadPipeline</strong></li>
+    <li><strong>MultiDestinationRake (MDR)</strong></li>
+    <li><strong>LoadAttribute</strong></li>
+    <li><strong>MaintenanceBlock</strong></li>
+    <li><strong>MaintenanceBlockResource</strong></li>
+    <li><strong>TrainServiceUpdateActual</strong></li>
+</ul>
+<p>
+    Each pipeline is isolated and can be independently enabled, monitored, and tuned.
+</p>
+
+<h2>2. Per-ID and Global Batching</h2>
+<p>
+    The system groups incoming messages before dispatching:
+</p>
+<ul>
+    <li><strong>Per-ID Batching:</strong> Used by LoadPipeline and MDR. Messages are grouped by a unique ID (e.g. <code>LoadID</code>).</li>
+    <li><strong>Global Batching:</strong> Used by other pipelines. All messages are processed in a single global batch.</li>
+</ul>
+
+<h2>3. Batch Flushing Triggers</h2>
+<p>
+    Batches are flushed to downstream systems based on:
+</p>
+<ul>
+    <li><strong>Size Trigger:</strong> Flush immediately if a batch reaches a specified number of messages.</li>
+    <li><strong>Time Trigger:</strong> Flush even if batch size isn't reached after a configured number of seconds.</li>
+</ul>
+<p>
+    These values are configurable per pipeline in <code>external-config.properties</code>.
+</p>
+
+<h2>4. Archiving</h2>
+<p>The service automatically archives:</p>
+<ul>
+    <li><strong>Incoming Payloads:</strong> Raw JSON is saved immediately on arrival.</li>
+    <li><strong>Merged Payloads:</strong> Flushed and merged JSON is archived post-processing.</li>
+    <li><strong>DLQ Payloads:</strong> Failed messages are saved to a dead-letter queue for retry or audit.</li>
+</ul>
+<p>
+    Archives are stored using a timestamped folder structure: <code>archive/yyyyMMdd/HH/mm/</code>
+</p>
+
+<h2>5. REST Dispatch</h2>
+<p>
+    Each flushed batch is dispatched via HTTP POST to a configured REST endpoint.
+</p>
+<ul>
+    <li>Dispatches are non-blocking and asynchronous using Spring WebClient.</li>
+    <li>Target URLs and enable flags are set in configuration per pipeline.</li>
+    <li>Dispatch can be temporarily disabled for testing.</li>
+</ul>
+
+<h2>6. Throttling</h2>
+<p>
+    To avoid overwhelming downstream services, each pipeline supports rate limiting:
+</p>
+<ul>
+    <li><strong>Requests Per Second (RPS):</strong> Configurable max calls per second.</li>
+    <li>Applies to successful and retry dispatch attempts.</li>
+</ul>
+
+<h2>7. Dead Letter Queue (DLQ)</h2>
+<p>
+    If dispatch fails (e.g., HTTP 500 or timeout), the payload is:
+</p>
+<ul>
+    <li>Stored in a DLQ archive directory.</li>
+    <li>Logged in the dispatch report as <code>FAILED</code>.</li>
+    <li>Optionally reviewed or reprocessed manually.</li>
+</ul>
+
+<h2>8. CSV Reporting</h2>
+<p>
+    The system generates daily CSV reports for each pipeline:
+</p>
+<ul>
+    <li>Files are named like <code>report_pipeline_YYYYMMDD.csv</code></li>
+    <li>Each row contains: minute, ID (if available), number of entries, and status (SENT, FAILED, SKIPPED)</li>
+    <li>Used for auditing, tracking, and alerting</li>
+</ul>
+
+<h2>9. Scheduled ZIP Archiving</h2>
+<p>
+    The <strong>ArchiveZipper</strong> runs nightly to:
+</p>
+<ul>
+    <li>Compress previous day’s archive folders into a ZIP file</li>
+    <li>Delete the original folders to save disk space</li>
+    <li>Retain only the N most recent ZIPs as per configuration</li>
+</ul>
+<p>
+    Each pipeline has its own schedule and ZIP folder path.
+</p>
+
+<h2>10. Configuration-Driven Behavior</h2>
+<p>
+    Every feature is configured via the <code>external-config.properties</code> file:
+</p>
+<ul>
+    <li>Port numbers</li>
+    <li>Flush sizes and time windows</li>
+    <li>Throttle limits</li>
+    <li>Target REST URLs</li>
+    <li>DLQ, archive paths, and cron schedules</li>
+</ul>
+<p>
+    This makes the system highly adaptable to different environments or use cases.
+</p>
+
+<h2>11. Fault Tolerance & Reliability</h2>
+<ul>
+    <li>Message loss is prevented with fail-safe DLQ archiving.</li>
+    <li>Multi-threaded async I/O keeps main logic responsive.</li>
+    <li>Scheduled flushing ensures no data is stuck indefinitely.</li>
+    <li>All steps (ingestion, batching, flush, dispatch, archive) are isolated and logged.</li>
+</ul>
+
+<h2>12. How to Monitor</h2>
+<p>
+    Operators can monitor the system via:
+</p>
+<ul>
+    <li>CSV files generated in reporting folders</li>
+    <li>Archived JSON messages in incoming/merged/DLQ</li>
+    <li>Spring Boot logs (stdout and error traces)</li>
+</ul>
+
+<h2>13. How to Extend</h2>
+<p>To add a new ingestion pipeline:</p>
+<ol>
+    <li>Create a new controller class and define the endpoint.</li>
+    <li>Add batching logic in <code>AggregatorService</code>.</li>
+    <li>Add config entries for port, batch size, archive, and dispatch settings.</li>
+    <li>Register archive and ZIP folders.</li>
+</ol>
+
+<h2>14. Summary</h2>
+<p>
+    The Aggregation Service is a powerful, modular ingestion and dispatch platform that combines real-time processing
+    with fault tolerance, observability, and configuration-driven design. It is designed to be easily extended,
+    resilient under load, and suitable for enterprise-scale JSON stream processing.
+</p>
+
+</body>
+<head>
+    <meta charset="UTF-8">
+    <title>Aggregation Service – Troubleshooting, Testing & Deployment</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.8; color: #2e2e2e; }
+        h1, h2, h3 { color: #003366; }
+        code { background: #f4f4f4; padding: 2px 6px; border-radius: 4px; }
+        ul, ol { margin-left: 25px; }
+        table { border-collapse: collapse; width: 100%; margin: 20px 0; }
+        th, td { border: 1px solid #ccc; padding: 10px; text-align: left; }
+        th { background-color: #f8f8f8; }
+    </style>
+</head>
+<body>
+
+<h1>Aggregation Service – Troubleshooting, Testing & Deployment Setup</h1>
+
+<hr>
+
+<h2>1. Troubleshooting Guide</h2>
+
+<h3>Startup Fails</h3>
+<ul>
+    <li><strong>Symptom:</strong> Application won’t start due to port conflict</li>
+    <li><strong>Cause:</strong> One or more ports in <code>external-config.properties</code> already in use</li>
+    <li><strong>Solution:</strong> Run <code>netstat -anp | grep 700X</code> and update port settings to unused values</li>
+</ul>
+
+<h3>Incoming Messages Not Processed</h3>
+<ul>
+    <li><strong>Check:</strong> Are archives created in the <code>incoming</code> folder?</li>
+    <li><strong>If not:</strong> Validate controller path and ensure the POST payload contains the correct JSON key</li>
+    <li><strong>Logs:</strong> Look for error stack traces in stdout or service logs</li>
+</ul>
+
+<h3>Batches Not Flushing</h3>
+<ul>
+    <li><strong>Possible cause:</strong> Message count is below size trigger AND time window not reached</li>
+    <li><strong>Tip:</strong> Try lowering <code>bucket.xxx.flush.size</code> or <code>consolidation.xxx.timeframe</code> for quicker flushing</li>
+</ul>
+
+<h3>Failed Dispatch / No Response</h3>
+<ul>
+    <li><strong>Check:</strong> CSV report for <code>FAILED</code> status</li>
+    <li><strong>Inspect:</strong> DLQ folder for failed JSON</li>
+    <li><strong>Retry Tip:</strong> Manually post DLQ content using <code>curl</code> or Postman to simulate resend</li>
+</ul>
+
+<h3>ArchiveZipper Not Creating ZIPs</h3>
+<ul>
+    <li><strong>Confirm:</strong> The feature is enabled (<code>archive.zipper.xxx.enabled=true</code>)</li>
+    <li><strong>Validate:</strong> Subdirectories from yesterday exist</li>
+    <li><strong>Review:</strong> ZIP cron schedule and check for exceptions in logs</li>
+</ul>
+
+<hr>
+
+<h2>2. Test Coverage Overview</h2>
+
+<p>Ensure your implementation is verified using the following tests:</p>
+
+<h3>Unit Tests</h3>
+<ul>
+    <li>✅ Bucket creation and message accumulation</li>
+    <li>✅ Size-based and time-based flush logic</li>
+    <li>✅ Archiving of incoming and merged payloads</li>
+    <li>✅ CSV report formatting</li>
+    <li>✅ DLQ file generation on dispatch failure</li>
+</ul>
+
+<h3>Integration Tests</h3>
+<ul>
+    <li>✅ End-to-end POST to controller → archive → flush → dispatch → report</li>
+    <li>✅ Simulated throttling (limit requests per second)</li>
+    <li>✅ REST endpoint mocking with success/failure simulation</li>
+</ul>
+
+<h3>Manual Tests (Optional)</h3>
+<ul>
+    <li>🔍 Test each route with Postman or curl</li>
+    <li>🗃️ Inspect file system for archive and report structure</li>
+    <li>📊 Tail CSV files live to monitor flushing in real time</li>
+</ul>
+
+<hr>
+
+<h2>3. Deployment Environment Setup</h2>
+
+<h3>System Requirements</h3>
+<ul>
+    <li>Java 17+</li>
+    <li>Spring Boot (embedded Tomcat)</li>
+    <li>Linux preferred (file path handling & cron)</li>
+</ul>
+
+<h3>Filesystem Folders (Create with Write Access)</h3>
+<ul>
+    <li><code>archive/&lt;pipeline&gt;/incoming/</code></li>
+    <li><code>archive/&lt;pipeline&gt;/merged/</code></li>
+    <li><code>archive/&lt;pipeline&gt;/zipped/</code></li>
+    <li><code>dlq/&lt;pipeline&gt;/</code></li>
+    <li><code>report_*.csv</code> will be created in app root or specified path</li>
+</ul>
+
+<h3>Ports & URLs</h3>
+<ul>
+    <li>Each controller runs on a dedicated port (see <code>external-config.properties</code>)</li>
+    <li>Ensure firewall allows access to relevant ports (e.g. 7001–7006)</li>
+    <li>Configure REST dispatch targets (e.g., <code>localhost:9001/load</code>)</li>
+</ul>
+
+<h3>Startup Checklist</h3>
+<ol>
+    <li>✅ All folders are writable</li>
+    <li>✅ Config file paths point to actual locations</li>
+    <li>✅ Cron schedules are valid and expected ZIP folders exist</li>
+    <li>✅ DLQ paths are monitored</li>
+    <li>✅ System memory and disk space are sufficient</li>
+</ol>
+
+<hr>
+
+<h2>4. Useful Commands</h2>
+
+<pre><code>
+# Check for open ports
+netstat -anp | grep 700
+
+# Simulate message ingestion
+curl -X POST http://localhost:7001/receive \
+     -H "Content-Type: application/json" \
+     -d @sample-loadpipeline.json
+
+# View logs in real time
+tail -f app.log
+
+# Force manual ZIP rotation test
+java -cp app.jar com.example.aggregation.ArchiveZipperTest
+</code></pre>
+
+<hr>
+
+<h2>5. Summary</h2>
+<p>
+    This page helps operators and engineers quickly understand the behavior, deployment needs, and troubleshooting options
+    for the Aggregation Service. It ensures readiness for production, monitoring, and scaling.
+</p>
+
+</body>
+</html>
