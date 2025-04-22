@@ -25,7 +25,12 @@ import org.springframework.web.reactive.function.client.WebClient;
  *   <li>TrainServiceUpdateActual (port ${trainserviceupdate.server.port})</li>
  * </ul>
  *
- * <p>Provides a shared WebClient for non‑blocking HTTP dispatch.</p>
+ * <p>It also enables scheduled tasks and exposes a shared reactive HTTP client
+ * for non-blocking dispatch to downstream systems.</p>
+ *
+ * @author jkr3 (Jainendra.kumar@3ds.com)
+ * @version 1.0.0
+ * @since 2025-04-20
  */
 @SpringBootApplication
 @EnableScheduling
@@ -35,52 +40,74 @@ public class AggregationServiceApplication {
         SpringApplication.run(AggregationServiceApplication.class, args);
     }
 
+    // ───────────── Injected HTTP Ports for Each Pipeline ─────────────
+
     @Value("${loadpipeline.server.port}")
     private int lpPort;
+
     @Value("${mdr.server.port}")
     private int mdrPort;
+
     @Value("${loadattribute.server.port}")
     private int laPort;
+
     @Value("${maintenanceblock.server.port}")
     private int mbPort;
+
     @Value("${maintenanceblockresource.server.port}")
     private int mbrPort;
+
     @Value("${trainserviceupdate.server.port}")
     private int tsuPort;
 
     /**
-     * Configures Tomcat with one primary connector (LoadPipeline)
-     * and five additional connectors for the other streams.
+     * Configures embedded Tomcat with six HTTP connectors.
+     * <p>
+     * The main connector uses the LoadPipeline port, and five additional connectors
+     * are added for other ingestion endpoints. This allows each controller to
+     * listen on its own dedicated port.
+     *
+     * @return customized servlet container
      */
     @Bean
     public ServletWebServerFactory servletContainer() {
         TomcatServletWebServerFactory tomcat = new TomcatServletWebServerFactory();
-        // Primary connector for LoadPipeline
+
+        // Primary port for LoadPipeline
         tomcat.setPort(lpPort);
-        // Additional connectors
+
+        // Add extra ports for other pipelines
         tomcat.addAdditionalTomcatConnectors(createConnector(mdrPort));
         tomcat.addAdditionalTomcatConnectors(createConnector(laPort));
         tomcat.addAdditionalTomcatConnectors(createConnector(mbPort));
         tomcat.addAdditionalTomcatConnectors(createConnector(mbrPort));
         tomcat.addAdditionalTomcatConnectors(createConnector(tsuPort));
+
         return tomcat;
     }
 
-    /** Helper to build an HTTP connector on the given port. */
+    /**
+     * Helper method to create an HTTP connector for a given port.
+     *
+     * @param port port number to listen on
+     * @return configured Tomcat connector
+     */
     private Connector createConnector(int port) {
-        Connector connector = new Connector(
-                TomcatServletWebServerFactory.DEFAULT_PROTOCOL
-        );
+        Connector connector = new Connector(TomcatServletWebServerFactory.DEFAULT_PROTOCOL);
         connector.setPort(port);
         return connector;
     }
 
     /**
-     * Shared non‑blocking HTTP client.
-     * Used by AggregatorService for all REST dispatches.
+     * Shared non-blocking WebClient bean used across the application.
+     * <p>
+     * This is used for dispatching processed batches to REST endpoints asynchronously.
+     *
+     * @return WebClient instance
      */
     @Bean
     public WebClient webClient() {
+
         return WebClient.builder().build();
     }
 }

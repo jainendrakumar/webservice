@@ -26,6 +26,29 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
+ * AggregatorService is the main processing unit of the ingestion system.
+ * <p>
+ * It handles six types of ingestion pipelines:
+ * <ul>
+ *     <li>LoadPipeline</li>
+ *     <li>MultiDestinationRake (MDR)</li>
+ *     <li>LoadAttribute</li>
+ *     <li>MaintenanceBlock</li>
+ *     <li>MaintenanceBlockResource</li>
+ *     <li>TrainServiceUpdateActual</li>
+ * </ul>
+ * <p>
+ * Features for each pipeline include:
+ * <ul>
+ *     <li>Ingestion and JSON parsing</li>
+ *     <li>Batching (by ID or globally)</li>
+ *     <li>Time/size-based flushing</li>
+ *     <li>Throttling requests per second</li>
+ *     <li>Archiving (incoming and merged)</li>
+ *     <li>Dispatching via non-blocking WebClient</li>
+ *     <li>CSV reporting and dead-letter queue handling</li>
+ * </ul>
+ *
  * Core aggregation service handling six pipelines:
  *   • LoadPipeline & MDR (per‑ID bucketing)
  *   • LoadAttribute, MaintenanceBlock,
@@ -46,8 +69,13 @@ import java.util.concurrent.atomic.LongAdder;
 @Service
 public class AggregatorService {
 
+    // JSON parser
     private final ObjectMapper mapper = new ObjectMapper();
+
+    // Shared HTTP client for dispatch
     private final WebClient webClient;
+
+    // Thread pool for file I/O tasks (archiving, logging)
     private final ExecutorService ioPool = Executors.newFixedThreadPool(4);
 
     // ─────────── LoadPipeline & MDR (per‑ID buckets) ─────────────────────────────
@@ -67,8 +95,10 @@ public class AggregatorService {
     @Value("${target.loadpipeline.rest.enabled}")     private boolean lpEnabled;
     @Value("${deadletterqueue.loadpipeline}")         private String lpDLQ;
     @Value("${report.loadpipeline.prefix}")           private String lpReportPref;
-    private final LongAdder lpCounter  = new LongAdder();
-    private volatile long lpWindowStart  = System.currentTimeMillis();
+
+    // Metrics and time tracking
+    private final LongAdder lpCounter = new LongAdder();
+    private volatile long lpWindowStart = System.currentTimeMillis();
 
     // MDR configuration
     @Value("${consolidation.mdr.timeframe}") private long mdrTimeWindow;
@@ -82,10 +112,11 @@ public class AggregatorService {
     @Value("${target.mdr.rest.enabled}")     private boolean mdrEnabled;
     @Value("${deadletterqueue.mdr}")         private String mdrDLQ;
     @Value("${report.mdr.prefix}")           private String mdrReportPref;
+
     private final LongAdder mdrCounter = new LongAdder();
     private volatile long mdrWindowStart = System.currentTimeMillis();
 
-    // ─────────── Global‑Batch Streams ────────────────────────────────────────────
+    // ───────────────────── Global Batch Buckets (Atomic references) ─────────────────────
 
     private final AtomicReference<BatchBucket> laBatch  = new AtomicReference<>(new BatchBucket());
     private final AtomicReference<BatchBucket> mbBatch  = new AtomicReference<>(new BatchBucket());
@@ -104,6 +135,7 @@ public class AggregatorService {
     @Value("${target.loadattribute.rest.enabled}")     private boolean laEnabled;
     @Value("${deadletterqueue.loadattribute}")         private String laDLQ;
     @Value("${report.loadattribute.prefix}")           private String laReportPref;
+
     private final LongAdder laCounter = new LongAdder();
     private volatile long laWindowStart = System.currentTimeMillis();
 
@@ -157,7 +189,9 @@ public class AggregatorService {
     private static final DateTimeFormatter CSV_FMT = DateTimeFormatter.ofPattern("mm");
 
     /**
-     * @param webClient shared non‑blocking HTTP client
+     * Constructs the AggregatorService with injected WebClient.
+     *
+     * @param webClient Shared reactive HTTP client used for all dispatches
      */
     public AggregatorService(WebClient webClient) {
         this.webClient = webClient;
@@ -168,37 +202,63 @@ public class AggregatorService {
     /**
      * Ingests a LoadPipeline message, groups by LoadID,
      * flushes by time‑window or size.
+     * <p>
+     * Behavior:
+     * <ul>
+     *     <li>Archives the incoming raw message (optional)</li>
+     *     <li>Parses the "LoadPipeline" array</li>
+     *     <li>Groups messages by LoadID into per-ID buckets</li>
+     *     <li>Flushes the bucket immediately if size threshold is reached</li>
+     * </ul>
+     *
+     * @param json   Incoming JSON string with "LoadPipeline" array
+     * @param source Metadata tag for the message source (e.g., "port")
      */
     public void processLoadPipeline(String json, String source) {
-        // Archive raw incoming
-        if (lpArchEnabled) ioPool.submit(() -> archive(json, lpIncRoot));
+        // Asynchronously archive incoming message
+        if (lpArchEnabled) {
+            ioPool.submit(() -> archive(json, lpIncRoot));
+        }
 
         try {
+            // Parse JSON string
             JsonNode root = mapper.readTree(json);
             ArrayNode arr = (ArrayNode) root.get("LoadPipeline");
-            if (arr == null || arr.isEmpty())
-                throw new IllegalArgumentException("Missing LoadPipeline array");
 
+            if (arr == null || arr.isEmpty()) {
+                throw new IllegalArgumentException("Missing LoadPipeline array");
+            }
+
+            // Use first LoadID as grouping key
             String id = arr.get(0).get("LoadID").asText();
 
+            // Put messages into bucket, flush if size exceeds threshold
             lpBuckets.compute(id, (key, bucket) -> {
                 if (bucket == null) bucket = new MessageBucket();
                 bucket.add(arr);
+
                 if (lpSizeTrigger > 0 && bucket.size() >= lpSizeTrigger) {
                     flushLoadPipeline(id, bucket);
-                    return null;
+                    return null; // Remove bucket after flush
                 }
-                return bucket;
+
+                return bucket; // Retain for further accumulation
             });
+
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    /** Runs every second to flush expired LoadPipeline buckets. */
+    /**
+     *  Periodic check to flush LoadPipeline buckets based on time threshold.
+     *  Runs every second to flush expired LoadPipeline buckets.
+     */
     @Scheduled(fixedDelay = 1000)
     public void flushLoadPipelineBuckets() {
         long now = System.currentTimeMillis();
+
+        // Check each bucket’s age
         lpBuckets.forEach((id, bucket) -> {
             if (now - bucket.getStart() >= lpTimeWindow * 1000) {
                 flushLoadPipeline(id, bucket);
@@ -208,22 +268,39 @@ public class AggregatorService {
 
     /**
      * Merges and dispatches a completed LoadPipeline bucket.
+     * Flushes a LoadPipeline message bucket:
+     * <ol>
+     *     <li>Merges all JSON arrays into one</li>
+     *     <li>Archives the merged payload</li>
+     *     <li>Dispatches to the REST endpoint (with throttling)</li>
+     *     <li>Writes CSV report and handles errors</li>
+     *     <li>Deletes the bucket from memory</li>
+     * </ol>
+     *
+     * @param id     the LoadID for this batch
+     * @param bucket the associated bucket containing messages
+     *
+     * @author jkr3 (Jainendra.kumar@3ds.com)
+     * @version 1.0.0
+     * @since 2025-04-20
      */
     private void flushLoadPipeline(String id, MessageBucket bucket) {
-        // 1) Merge
+        // Merge into a single JSON array
         ObjectNode merged = mapper.createObjectNode();
         ArrayNode out = merged.putArray("LoadPipeline");
         bucket.getMessages().forEach(node -> node.forEach(out::add));
         String payload = merged.toString();
 
-        // 2) Archive merged
-        if (lpArchEnabled) ioPool.submit(() -> archive(payload, lpMerRoot));
+        // Archive the merged payload
+        if (lpArchEnabled) {
+            ioPool.submit(() -> archive(payload, lpMerRoot));
+        }
 
-        // 3) Dispatch + throttle + report
+        // Send and report
         sendWithThrottleAndReport(
                 id,
                 payload,
-                bucket.size(),           // entryCount
+                bucket.size(),
                 lpEnabled,
                 lpUrl,
                 lpThrotEnabled,
@@ -234,40 +311,66 @@ public class AggregatorService {
                 lpReportPref
         );
 
-        // 4) Remove bucket
+        // Remove from active buckets
         lpBuckets.remove(id);
     }
 
     // ─────────── MDR Methods ────────────────────────────────────────────────────
 
-    /** Ingests an MDR message. */
+    /**
+     * Ingests a MultiDestinationRake (MDR) JSON payload.
+     * <p>
+     * Logic:
+     * <ul>
+     *     <li>Archives the incoming JSON message</li>
+     *     <li>Parses "MultiDestinationRake" array</li>
+     *     <li>Groups by LoadID into per-ID buckets</li>
+     *     <li>Flushes the bucket if size threshold reached</li>
+     * </ul>
+     *
+     * @param json   Raw MDR JSON
+     * @param source Metadata tag (e.g. "port")
+     */
     public void processMdr(String json, String source) {
-        if (mdrArchEnabled) ioPool.submit(() -> archive(json, mdrIncRoot));
+        if (mdrArchEnabled) {
+            ioPool.submit(() -> archive(json, mdrIncRoot));
+        }
+
         try {
             JsonNode root = mapper.readTree(json);
             ArrayNode arr = (ArrayNode) root.get("MultiDestinationRake");
-            if (arr == null || arr.isEmpty())
+
+            if (arr == null || arr.isEmpty()) {
                 throw new IllegalArgumentException("Missing MultiDestinationRake array");
+            }
 
             String id = arr.get(0).get("LoadID").asText();
-            mdrBuckets.compute(id, (k, bucket) -> {
+
+            mdrBuckets.compute(id, (key, bucket) -> {
                 if (bucket == null) bucket = new MessageBucket();
                 bucket.add(arr);
+
                 if (mdrSizeTrigger > 0 && bucket.size() >= mdrSizeTrigger) {
                     flushMdr(id, bucket);
                     return null;
                 }
+
                 return bucket;
             });
+
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    /** Runs every second to flush expired MDR buckets. */
+    /**
+     * Scheduled method to flush expired MDR buckets based on time threshold.
+     * Executes every second.
+     */
     @Scheduled(fixedDelay = 1000)
     public void flushMdrBuckets() {
         long now = System.currentTimeMillis();
+
         mdrBuckets.forEach((id, bucket) -> {
             if (now - bucket.getStart() >= mdrTimeWindow * 1000) {
                 flushMdr(id, bucket);
@@ -275,14 +378,23 @@ public class AggregatorService {
         });
     }
 
-    /** Merges and dispatches a completed MDR bucket. */
+    /**
+     * Merges, dispatches and flushes a completed MDR bucket.
+     *
+     * @param id     LoadID used for grouping
+     * @param bucket Buffered messages for this LoadID
+     */
     private void flushMdr(String id, MessageBucket bucket) {
+        // Combine messages into a single array
         ObjectNode merged = mapper.createObjectNode();
         ArrayNode out = merged.putArray("MultiDestinationRake");
         bucket.getMessages().forEach(node -> node.forEach(out::add));
         String payload = merged.toString();
 
-        if (mdrArchEnabled) ioPool.submit(() -> archive(payload, mdrMerRoot));
+        if (mdrArchEnabled) {
+            ioPool.submit(() -> archive(payload, mdrMerRoot));
+        }
+
         sendWithThrottleAndReport(
                 id,
                 payload,
@@ -296,33 +408,48 @@ public class AggregatorService {
                 mdrDLQ,
                 mdrReportPref
         );
+
         mdrBuckets.remove(id);
     }
 
     // ───────────── LoadAttribute (global batch) ─────────────────────────────────
 
-    /** Ingests a LoadAttribute message into the global batch. */
+    /**
+     * Processes a LoadAttribute message batch (global batching).
+     *
+     * @param json   Raw JSON input with "LoadAttribute" array
+     * @param source Metadata tag (unused in this case)
+     */
     public void processLoadAttribute(String json, String source) {
-        if (laArchEnabled) ioPool.submit(() -> archive(json, laIncRoot));
+        if (laArchEnabled) {
+            ioPool.submit(() -> archive(json, laIncRoot));
+        }
+
         try {
             ArrayNode arr = (ArrayNode) mapper.readTree(json).get("LoadAttribute");
-            if (arr == null || arr.isEmpty())
-                throw new IllegalArgumentException("Missing LoadAttribute array");
 
+            if (arr == null || arr.isEmpty()) {
+                throw new IllegalArgumentException("Missing LoadAttribute array");
+            }
+
+            // Add to current batch
             BatchBucket batch = laBatch.get();
             batch.add(arr);
 
-            // Flush immediately if size threshold reached
+            // Flush immediately if batch is full
             if (batch.size() >= laSizeTrigger) {
                 BatchBucket toFlush = laBatch.getAndSet(new BatchBucket());
                 flushLoadAttributeBatch(toFlush);
             }
+
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    /** Every second, flush LoadAttribute batch if time threshold reached. */
+    /**
+     * Scheduled flush of LoadAttribute messages if time window exceeded.
+     */
     @Scheduled(fixedDelay = 1000)
     public void flushLoadAttributeByTime() {
         BatchBucket batch = laBatch.get();
@@ -334,14 +461,16 @@ public class AggregatorService {
         }
     }
 
-    /** Merges and dispatches one LoadAttribute batch. */
+    /** Flush and dispatch the LoadAttribute batch */
     private void flushLoadAttributeBatch(BatchBucket batch) {
         ObjectNode merged = mapper.createObjectNode();
         ArrayNode out = merged.putArray("LoadAttribute");
         batch.getMessages().forEach(arr -> arr.forEach(out::add));
         String payload = merged.toString();
 
-        if (laArchEnabled) ioPool.submit(() -> archive(payload, laMerRoot));
+        if (laArchEnabled) {
+            ioPool.submit(() -> archive(payload, laMerRoot));
+        }
 
         sendWithThrottleAndReport(
                 null,
@@ -360,13 +489,16 @@ public class AggregatorService {
 
     // ───────── MaintenanceBlock (global batch) ─────────────────────────────────
 
-    /** Ingests a MaintenanceBlock message into the global batch. */
+    /** Process incoming MaintenanceBlock batch (global batching). */
     public void processMaintenanceBlock(String json, String source) {
         if (mbArchEnabled) ioPool.submit(() -> archive(json, mbIncRoot));
+
         try {
             ArrayNode arr = (ArrayNode) mapper.readTree(json).get("MaintenanceBlock");
-            if (arr == null || arr.isEmpty())
+
+            if (arr == null || arr.isEmpty()) {
                 throw new IllegalArgumentException("Missing MaintenanceBlock array");
+            }
 
             BatchBucket batch = mbBatch.get();
             batch.add(arr);
@@ -375,6 +507,7 @@ public class AggregatorService {
                 BatchBucket toFlush = mbBatch.getAndSet(new BatchBucket());
                 flushMaintenanceBlockBatch(toFlush);
             }
+
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -397,7 +530,9 @@ public class AggregatorService {
         batch.getMessages().forEach(arr -> arr.forEach(out::add));
         String payload = merged.toString();
 
-        if (mbArchEnabled) ioPool.submit(() -> archive(payload, mbMerRoot));
+        if (mbArchEnabled) {
+            ioPool.submit(() -> archive(payload, mbMerRoot));
+        }
 
         sendWithThrottleAndReport(
                 null,
@@ -416,12 +551,16 @@ public class AggregatorService {
 
     // ─────── MaintenanceBlockResource (global batch) ────────────────────────────
 
+    /** Processes MaintenanceBlockResource messages in global batch mode. */
     public void processMaintenanceBlockResource(String json, String source) {
         if (mbrArchEnabled) ioPool.submit(() -> archive(json, mbrIncRoot));
+
         try {
             ArrayNode arr = (ArrayNode) mapper.readTree(json).get("MaintenanceBlockResource");
-            if (arr == null || arr.isEmpty())
+
+            if (arr == null || arr.isEmpty()) {
                 throw new IllegalArgumentException("Missing MaintenanceBlockResource array");
+            }
 
             BatchBucket batch = mbrBatch.get();
             batch.add(arr);
@@ -430,6 +569,7 @@ public class AggregatorService {
                 BatchBucket toFlush = mbrBatch.getAndSet(new BatchBucket());
                 flushMaintenanceBlockResourceBatch(toFlush);
             }
+
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -452,7 +592,9 @@ public class AggregatorService {
         batch.getMessages().forEach(arr -> arr.forEach(out::add));
         String payload = merged.toString();
 
-        if (mbrArchEnabled) ioPool.submit(() -> archive(payload, mbrMerRoot));
+        if (mbrArchEnabled) {
+            ioPool.submit(() -> archive(payload, mbrMerRoot));
+        }
 
         sendWithThrottleAndReport(
                 null,
@@ -469,14 +611,19 @@ public class AggregatorService {
         );
     }
 
+
     // ─────── TrainServiceUpdateActual (global batch) ────────────────────────────
 
+    /** Processes TrainServiceUpdateActual (TrainActual array) via global batching. */
     public void processTrainServiceUpdate(String json, String source) {
         if (tsuArchEnabled) ioPool.submit(() -> archive(json, tsuIncRoot));
+
         try {
             ArrayNode arr = (ArrayNode) mapper.readTree(json).get("TrainActual");
-            if (arr == null || arr.isEmpty())
+
+            if (arr == null || arr.isEmpty()) {
                 throw new IllegalArgumentException("Missing TrainActual array");
+            }
 
             BatchBucket batch = tsuBatch.get();
             batch.add(arr);
@@ -485,6 +632,7 @@ public class AggregatorService {
                 BatchBucket toFlush = tsuBatch.getAndSet(new BatchBucket());
                 flushTrainServiceUpdateBatch(toFlush);
             }
+
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -507,7 +655,9 @@ public class AggregatorService {
         batch.getMessages().forEach(arr -> arr.forEach(out::add));
         String payload = merged.toString();
 
-        if (tsuArchEnabled) ioPool.submit(() -> archive(payload, tsuMerRoot));
+        if (tsuArchEnabled) {
+            ioPool.submit(() -> archive(payload, tsuMerRoot));
+        }
 
         sendWithThrottleAndReport(
                 null,
@@ -524,22 +674,23 @@ public class AggregatorService {
         );
     }
 
-    // ───────── Shared Helper Methods ───────────────────────────────────────────
+    // ───────────────────── Shared Helper Methods ─────────────────────
 
     /**
-     * Dispatches payload with optional throttling, reports CSV, handles dead‑letter.
+     * Dispatches the payload via HTTP POST with optional throttling,
+     * logs status to CSV, and sends failed messages to a dead-letter queue.
      *
-     * @param id            optional ID (or null for global batch)
-     * @param payload       merged JSON
-     * @param entryCount    number of entries in this batch
-     * @param enabled       whether to perform HTTP POST
-     * @param url           target REST URL
-     * @param thrEnabled    whether to throttle
-     * @param thrLimit      max calls/sec
-     * @param counter       LongAdder counting calls this second
-     * @param resetWindow   resets the second-window timestamp
-     * @param dlqRoot       dead-letter archive root
-     * @param reportPref    CSV report file prefix
+     * @param id           Optional ID (used for per-ID pipelines; null for global batch)
+     * @param payload      Final merged JSON message
+     * @param entryCount   Total number of entries in this message
+     * @param enabled      Whether HTTP dispatch is enabled
+     * @param url          Target REST endpoint URL
+     * @param thrEnabled   Whether throttling is active
+     * @param thrLimit     Max requests per second if throttling is enabled
+     * @param counter      LongAdder to count dispatches in current second
+     * @param resetWindow  Function to reset the timestamp window
+     * @param dlqRoot      Path to dead-letter archive folder
+     * @param reportPref   Prefix for the CSV report filename
      */
     private void sendWithThrottleAndReport(
             String id,
@@ -554,34 +705,43 @@ public class AggregatorService {
             String dlqRoot,
             String reportPref
     ) {
-        // Compute minute for CSV
+        // Format minute for CSV logging (e.g. "05", "43")
         String minute = LocalTime.now().format(CSV_FMT);
 
         if (enabled) {
-            // Throttle if needed
+            // Apply throttling logic (if enabled)
             throttle(counter, resetWindow, thrEnabled, thrLimit);
 
-            // Non-blocking HTTP POST
+            // Non-blocking async HTTP POST using WebClient
             webClient.post()
                     .uri(url)
                     .bodyValue(payload)
                     .retrieve()
                     .toBodilessEntity()
-                    .doOnSuccess(resp -> writeCsv(reportPref, id, entryCount, minute, "SENT"))
+                    .doOnSuccess(resp -> {
+                        // Successful POST — log to CSV as SENT
+                        writeCsv(reportPref, id, entryCount, minute, "SENT");
+                    })
                     .doOnError(err -> {
+                        // Log error, archive to DLQ, and mark as FAILED
                         err.printStackTrace();
                         ioPool.submit(() -> archive(payload, dlqRoot));
                         writeCsv(reportPref, id, entryCount, minute, "FAILED");
                     })
                     .subscribe();
         } else {
-            // Dispatch disabled: record SKIPPED
+            // Dispatch is disabled — log as SKIPPED
             writeCsv(reportPref, id, entryCount, minute, "SKIPPED");
         }
     }
 
     /**
-     * Simple per‑second throttle using LongAdder.
+     * Simple throttle mechanism using LongAdder for per-second control.
+     *
+     * @param counter      Accumulator for number of dispatches
+     * @param resetWindow  Timestamp reset hook
+     * @param enabled      Whether throttling is active
+     * @param limit        Max allowed dispatches per second
      */
     private void throttle(
             LongAdder counter,
@@ -590,31 +750,50 @@ public class AggregatorService {
             int limit
     ) {
         if (!enabled) return;
+
         long now = System.currentTimeMillis();
+
         // Reset counter every second
         if (now - resetWindowTime(resetWindow) >= 1000) {
             counter.reset();
             resetWindow.run();
         }
-        // If at limit, brief sleep
+
+        // If limit reached, pause briefly
         if (counter.sum() >= limit) {
-            try { Thread.sleep(1); }
-            catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+            try {
+                Thread.sleep(1);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
         }
+
         counter.increment();
     }
 
-    /** Placeholder for mapping resetWindow to its timestamp. */
+    /**
+     * Dummy method for throttle window reset timestamp.
+     * (Could be improved to use actual window tracking per pipeline.)
+     */
     private long resetWindowTime(Runnable resetWindow) {
         return System.currentTimeMillis();
     }
 
-    /** Archives JSON under root/YYYYMMdd/HH/mm/filename.json. */
+    /**
+     * Writes a JSON payload to the archive directory using a structured timestamped path:
+     * root/yyyyMMdd/HH/mm/UUID.json
+     *
+     * @param json JSON string to write
+     * @param root Base folder under which timestamped subfolders will be created
+     */
     private void archive(String json, String root) {
         try {
+            // Create timestamped folder structure like 20240420/14/23/
             String sub = LocalDateTime.now().format(DIR_FMT);
             Path dir = Paths.get(root, sub);
             Files.createDirectories(dir);
+
+            // Write to a uniquely named file using UUID
             String fname = System.currentTimeMillis() + "_" + UUID.randomUUID() + ".json";
             Files.writeString(dir.resolve(fname), json, StandardOpenOption.CREATE_NEW);
         } catch (IOException e) {
@@ -623,52 +802,83 @@ public class AggregatorService {
     }
 
     /**
-     * Appends a line to the daily CSV: Minute,ID,EntryCount,Status.
+     * Appends an entry to a daily CSV file for tracking dispatches.
+     * CSV format: Minute,ID,EntryCount,Status
+     *
+     * @param prefix     CSV file prefix (e.g. report_loadpipeline_)
+     * @param id         Optional ID for the message batch
+     * @param count      Number of messages
+     * @param minute     Minute of the hour (e.g. "04")
+     * @param status     One of: SENT, FAILED, SKIPPED
      */
     private void writeCsv(String prefix, String id, int count, String minute, String status) {
         try {
+            // Generate file name based on today's date
             String date = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
             Path file = Paths.get(prefix + date + ".csv");
-            boolean hdr = Files.notExists(file);
+
+            boolean newFile = Files.notExists(file);
+
+            // Append new entry (and header if file is new)
             try (BufferedWriter bw = Files.newBufferedWriter(
                     file, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
-                if (hdr) bw.write("Minute,ID,EntryCount,Status\n");
+                if (newFile) {
+                    bw.write("Minute,ID,EntryCount,Status\n");
+                }
                 bw.write(String.join(",", minute,
                         id == null ? "" : id,
                         String.valueOf(count),
                         status) + "\n");
             }
+
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
 
-    /** Shuts down the I/O executor cleanly on app exit. */
+    /**
+     * Gracefully shuts down the I/O thread pool when the application is closing.
+     */
     @PreDestroy
     public void shutdown() {
         ioPool.shutdown();
     }
 
-    // ─────────── Internal Bucket Classes ─────────────────────────────────────────
+    // ───────────────────── Internal Helper Classes ─────────────────────
 
-    /** Per‑ID bucket for LoadPipeline & MDR. */
+    /**
+     * Represents a per-ID message bucket for LoadPipeline and MDR.
+     * Holds a queue of JSON arrays and a timestamp.
+     */
     private static class MessageBucket {
         private final long start = System.currentTimeMillis();
         private final ConcurrentLinkedQueue<ArrayNode> msgs = new ConcurrentLinkedQueue<>();
+
         void add(ArrayNode arr) { msgs.add(arr); }
-        long getStart()      { return start; }
+
+        long getStart() { return start; }
+
         Collection<ArrayNode> getMessages() { return msgs; }
-        int size()           { return msgs.size(); }
+
+        int size() { return msgs.size(); }
     }
 
-    /** Global batch for the four batch-only streams. */
+    /**
+     * Represents a global batch bucket for LoadAttribute, MB, MBR, TSU.
+     */
     private static class BatchBucket {
         private final long start = System.currentTimeMillis();
         private final ConcurrentLinkedQueue<ArrayNode> msgs = new ConcurrentLinkedQueue<>();
+
         void add(ArrayNode arr) { msgs.add(arr); }
-        long getStart()        { return start; }
+
+        long getStart() { return start; }
+
         Collection<ArrayNode> getMessages() { return msgs; }
-        int size()             { return msgs.size(); }
-        boolean isEmpty()      { return msgs.isEmpty(); }
+
+        int size() { return msgs.size(); }
+
+        boolean isEmpty() { return msgs.isEmpty(); }
     }
 }
+

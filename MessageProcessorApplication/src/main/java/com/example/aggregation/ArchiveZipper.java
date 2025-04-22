@@ -29,6 +29,10 @@ import java.util.zip.ZipOutputStream;
  * </ul>
  * <p>
  * Configurations are defined per-pipeline using external properties.
+ *
+ * @author jkr3 (Jainendra.kumar@3ds.com)
+ * @version 1.0.0
+ * @since 2025-04-20
  */
 @Service
 public class ArchiveZipper {

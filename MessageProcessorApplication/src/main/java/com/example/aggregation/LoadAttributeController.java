@@ -10,6 +10,10 @@ import org.springframework.web.bind.annotation.*;
  *
  * <p>Listens on /receive-loadattribute at the port configured by
  * loadattribute.server.port.</p>
+ *
+ * @author jkr3 (Jainendra.kumar@3ds.com)
+ * @version 1.0.0
+ * @since 2025-04-20
  */
 @RestController
 @RequestMapping("/receive-loadattribute")

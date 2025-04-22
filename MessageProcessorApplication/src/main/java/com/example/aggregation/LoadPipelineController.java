@@ -10,6 +10,10 @@ import org.springframework.web.bind.annotation.*;
  *
  * <p>Listens on /receive at the port configured by
  * loadpipeline.server.port.</p>
+ *
+ * @author jkr3 (Jainendra.kumar@3ds.com)
+ * @version 1.0.0
+ * @since 2025-04-20
  */
 @RestController
 @RequestMapping("/receive")
