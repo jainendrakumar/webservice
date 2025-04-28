@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.http.MediaType;
 
 import javax.annotation.PreDestroy;
 import java.io.BufferedWriter;
@@ -705,32 +706,27 @@ public class AggregatorService {
             String dlqRoot,
             String reportPref
     ) {
-        // Format minute for CSV logging (e.g. "05", "43")
         String minute = LocalTime.now().format(CSV_FMT);
 
         if (enabled) {
-            // Apply throttling logic (if enabled)
             throttle(counter, resetWindow, thrEnabled, thrLimit);
 
-            // Non-blocking async HTTP POST using WebClient
             webClient.post()
                     .uri(url)
+                    .contentType(MediaType.APPLICATION_JSON) // -- Added this important line
                     .bodyValue(payload)
                     .retrieve()
                     .toBodilessEntity()
                     .doOnSuccess(resp -> {
-                        // Successful POST — log to CSV as SENT
                         writeCsv(reportPref, id, entryCount, minute, "SENT");
                     })
                     .doOnError(err -> {
-                        // Log error, archive to DLQ, and mark as FAILED
                         err.printStackTrace();
                         ioPool.submit(() -> archive(payload, dlqRoot));
                         writeCsv(reportPref, id, entryCount, minute, "FAILED");
                     })
                     .subscribe();
         } else {
-            // Dispatch is disabled — log as SKIPPED
             writeCsv(reportPref, id, entryCount, minute, "SKIPPED");
         }
     }
