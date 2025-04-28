@@ -7,10 +7,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.http.MediaType;
+import org.springframework.web.client.RestTemplate;
 
 import javax.annotation.PreDestroy;
 import java.io.BufferedWriter;
@@ -46,7 +49,7 @@ import java.util.concurrent.atomic.LongAdder;
  *     <li>Time/size-based flushing</li>
  *     <li>Throttling requests per second</li>
  *     <li>Archiving (incoming and merged)</li>
- *     <li>Dispatching via non-blocking WebClient</li>
+ *     <li>Dispatching via HttpEntity with RestTemplate</li>
  *     <li>CSV reporting and dead-letter queue handling</li>
  * </ul>
  *
@@ -60,7 +63,7 @@ import java.util.concurrent.atomic.LongAdder;
  *   – Time‑window or size‑triggered flush
  *   – Async archiving (incoming & merged)
  *   – Per‑second throttling
- *   – Non‑blocking REST dispatch via WebClient
+ *   – REST dispatch via HttpEntity with RestTemplate
  *   – Daily CSV reporting
  *   – Dead‑letter queue
  *   – Daily ZIP + retention
@@ -74,7 +77,7 @@ public class AggregatorService {
     private final ObjectMapper mapper = new ObjectMapper();
 
     // Shared HTTP client for dispatch
-    private final WebClient webClient;
+    private final RestTemplate restTemplate;
 
     // Thread pool for file I/O tasks (archiving, logging)
     private final ExecutorService ioPool = Executors.newFixedThreadPool(4);
@@ -190,12 +193,12 @@ public class AggregatorService {
     private static final DateTimeFormatter CSV_FMT = DateTimeFormatter.ofPattern("mm");
 
     /**
-     * Constructs the AggregatorService with injected WebClient.
+     * Constructs the AggregatorService with injected RestTemplate.
      *
-     * @param webClient Shared reactive HTTP client used for all dispatches
+     * @param restTemplate Shared HTTP client used for all dispatches
      */
-    public AggregatorService(WebClient webClient) {
-        this.webClient = webClient;
+    public AggregatorService(RestTemplate restTemplate) {
+        this.restTemplate = restTemplate;
     }
 
     // ─────────── LoadPipeline Methods ───────────────────────────────────────────
@@ -259,7 +262,7 @@ public class AggregatorService {
     public void flushLoadPipelineBuckets() {
         long now = System.currentTimeMillis();
 
-        // Check each bucket’s age
+        // Check each bucket's age
         lpBuckets.forEach((id, bucket) -> {
             if (now - bucket.getStart() >= lpTimeWindow * 1000) {
                 flushLoadPipeline(id, bucket);
@@ -371,7 +374,6 @@ public class AggregatorService {
     @Scheduled(fixedDelay = 1000)
     public void flushMdrBuckets() {
         long now = System.currentTimeMillis();
-
         mdrBuckets.forEach((id, bucket) -> {
             if (now - bucket.getStart() >= mdrTimeWindow * 1000) {
                 flushMdr(id, bucket);
@@ -488,9 +490,9 @@ public class AggregatorService {
         );
     }
 
-    // ───────── MaintenanceBlock (global batch) ─────────────────────────────────
+    // ─────────── MaintenanceBlock (global batch) ────────────────────────────────
 
-    /** Process incoming MaintenanceBlock batch (global batching). */
+    /** Processes MaintenanceBlock messages in global batch mode. */
     public void processMaintenanceBlock(String json, String source) {
         if (mbArchEnabled) ioPool.submit(() -> archive(json, mbIncRoot));
 
@@ -711,21 +713,25 @@ public class AggregatorService {
         if (enabled) {
             throttle(counter, resetWindow, thrEnabled, thrLimit);
 
-            webClient.post()
-                    .uri(url)
-                    .contentType(MediaType.APPLICATION_JSON) // -- Added this important line
-                    .bodyValue(payload)
-                    .retrieve()
-                    .toBodilessEntity()
-                    .doOnSuccess(resp -> {
-                        writeCsv(reportPref, id, entryCount, minute, "SENT");
-                    })
-                    .doOnError(err -> {
-                        err.printStackTrace();
-                        ioPool.submit(() -> archive(payload, dlqRoot));
-                        writeCsv(reportPref, id, entryCount, minute, "FAILED");
-                    })
-                    .subscribe();
+            try {
+                // Create headers
+                HttpHeaders headers = new HttpHeaders();
+                headers.setContentType(MediaType.APPLICATION_JSON);
+                
+                // Create HttpEntity with payload and headers
+                HttpEntity<String> requestEntity = new HttpEntity<>(payload, headers);
+                
+                // Send request using RestTemplate
+                ResponseEntity<Void> response = restTemplate.postForEntity(url, requestEntity, Void.class);
+                
+                // Handle success
+                writeCsv(reportPref, id, entryCount, minute, "SENT");
+            } catch (Exception err) {
+                // Handle error
+                err.printStackTrace();
+                ioPool.submit(() -> archive(payload, dlqRoot));
+                writeCsv(reportPref, id, entryCount, minute, "FAILED");
+            }
         } else {
             writeCsv(reportPref, id, entryCount, minute, "SKIPPED");
         }
@@ -877,4 +883,3 @@ public class AggregatorService {
         boolean isEmpty() { return msgs.isEmpty(); }
     }
 }
-

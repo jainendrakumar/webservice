@@ -42,11 +42,13 @@
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
-        <!-- WebFlux for non-blocking WebClient -->
+        <!-- WebFlux for non-blocking WebClient (Commented out as RestTemplate is used now) -->
+        <!--
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webflux</artifactId>
         </dependency>
+        -->
 
         <!-- Testing: JUnit, Mockito, Spring Test -->
         <dependency>

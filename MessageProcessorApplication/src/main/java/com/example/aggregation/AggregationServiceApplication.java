@@ -5,11 +5,13 @@ import org.apache.catalina.connector.Connector;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactory;
 import org.springframework.boot.web.servlet.server.ServletWebServerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.scheduling.annotation.EnableScheduling;
-import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.client.RestTemplate;
+// Removed: import org.springframework.web.reactive.function.client.WebClient;
 
 /**
  * Main entry point for the Aggregation Service.
@@ -25,12 +27,12 @@ import org.springframework.web.reactive.function.client.WebClient;
  *   <li>TrainServiceUpdateActual (port ${trainserviceupdate.server.port})</li>
  * </ul>
  *
- * <p>It also enables scheduled tasks and exposes a shared reactive HTTP client
- * for non-blocking dispatch to downstream systems.</p>
+ * <p>It also enables scheduled tasks and exposes a shared RestTemplate
+ * for synchronous dispatch to downstream systems.</p>
  *
  * @author jkr3 (Jainendra.kumar@3ds.com)
- * @version 1.0.0
- * @since 2025-04-20
+ * @version 1.1.0
+ * @since 2025-04-28 // Updated version and date
  */
 @SpringBootApplication
 @EnableScheduling
@@ -99,15 +101,36 @@ public class AggregationServiceApplication {
     }
 
     /**
-     * Shared non-blocking WebClient bean used across the application.
+     * Shared RestTemplate bean used across the application.
      * <p>
-     * This is used for dispatching processed batches to REST endpoints asynchronously.
+     * This is used for dispatching processed batches to REST endpoints synchronously.
      *
-     * @return WebClient instance
+     * @return RestTemplate instance
      */
     @Bean
-    public WebClient webClient() {
+    public RestTemplate restTemplate() {
+        return restTemplate();
+    }
 
+    /**
+     * Shared RestTemplate bean used across the application.
+     * <p>
+     * This is used for dispatching processed batches to REST endpoints synchronously.
+     *
+     * @param builder RestTemplateBuilder provided by Spring Boot
+     * @return RestTemplate instance
+     */
+    @Bean
+    public RestTemplate restTemplate(RestTemplateBuilder builder) {
+        // Consider adding configurations like timeouts if needed
+        // return builder.setConnectTimeout(Duration.ofSeconds(10)).setReadTimeout(Duration.ofSeconds(10)).build();
+        return builder.build();
+    }
+
+    /* Removed WebClient bean
+    @Bean
+    public WebClient webClient() {
         return WebClient.builder().build();
     }
+    */
 }
